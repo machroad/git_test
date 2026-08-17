@@ -726,7 +726,9 @@ try {
   await combat.screenshot({ path: join(SHOTS, '11-combat.png') })
   await combat.keyboard.up('Space')
 
-  // 카메라는 이제 벽을 피하지 않는다. 거리가 일정해야 한다.
+  // 카메라 거리가 프레임 사이에 튀지 않는지.
+  // 회전량을 실제 조작 수준(프레임당 약 3.4도)으로 맞춰야 의미가 있다.
+  // 프레임당 20도씩 돌리면 게임이 아니라 측정 조건을 재게 된다.
   const distances = await combat.evaluate(
     () =>
       new Promise((resolve) => {
@@ -734,22 +736,52 @@ try {
         const view = window.__game.views[0]
         let steps = 0
         const tick = () => {
-          view.camera.rotate(0.35, 0)
+          view.camera.rotate(0.06, 0)
           const local = view.state.renderPosition()
           const cam = view.scene.camera.position
           samples.push(Math.hypot(cam.x - local.x, cam.z - local.z))
-          if (++steps >= 18) resolve(samples)
+          if (++steps >= 40) resolve(samples)
           else requestAnimationFrame(tick)
         }
         requestAnimationFrame(tick)
       }),
   )
-  const spread = Math.max(...distances) - Math.min(...distances)
+  let maxStep = 0
+  for (let i = 1; i < distances.length; i++) {
+    maxStep = Math.max(maxStep, Math.abs(distances[i] - distances[i - 1]))
+  }
+  // 거리를 줄이는 방식이 다시 들어오면 여기서 값이 튄다.
   check(
-    '회전해도 3인칭 카메라 거리가 변하지 않는다',
-    spread < 0.05,
-    `(편차 ${spread.toFixed(3)}, 거리 ${distances[0].toFixed(2)})`,
+    '회전해도 3인칭 카메라 거리가 튀지 않는다',
+    maxStep < 0.5,
+    `(프레임 간 최대 변화 ${maxStep.toFixed(3)})`,
   )
+
+  // 카메라가 벽 안에 들어가면, 그 벽이 투명해지면서 벽 너머 통로까지 들여다보인다.
+  const insideWall = await combat.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const view = window.__game.views[0]
+        let inside = 0
+        let steps = 0
+        const tick = () => {
+          view.camera.rotate(0.4, 0)
+          const cam = view.scene.camera.position
+          const boxes = view.scene.wallBoxes
+          if (
+            boxes.some(
+              (b) => cam.x > b.minX && cam.x < b.maxX && cam.z > b.minZ && cam.z < b.maxZ,
+            )
+          ) {
+            inside++
+          }
+          if (++steps >= 16) resolve(inside)
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+  )
+  check('카메라가 벽 안으로 들어가지 않는다', insideWall === 0, `(${insideWall}/16 프레임)`)
 
   // 대신 가리는 벽이 반투명 사본으로 옮겨져야 한다.
   const ghost = await combat.evaluate(

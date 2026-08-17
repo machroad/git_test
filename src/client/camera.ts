@@ -6,7 +6,7 @@
  */
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
 import { CELL, EYE_H } from '../shared/constants'
-import type { Maze } from '../shared/maze'
+import { resolveCircle, type Maze } from '../shared/maze'
 import type { MazeScene } from './scene'
 
 export type ViewMode = 'first' | 'third'
@@ -25,13 +25,18 @@ const THIRD_PIVOT_H = EYE_H + 0.45
 /** 시선을 캐릭터보다 이만큼 앞에 둬서 캐릭터를 화면 중앙에서 비켜나게 한다. */
 const THIRD_LOOK_AHEAD = 2.2
 /**
- * 카메라는 벽을 피하지 않는다. 대신 가리는 벽을 반투명하게 만든다.
+ * 카메라는 거리를 줄이지 않는다. 대신 두 가지를 한다.
  *
- * 벽을 피하게 하면 좁은 통로에서 거리가 쉴 새 없이 변하고, 그 움직임 자체가 어색하다.
- * 통로 폭이 4인데 카메라를 3.4 뒤에 두려니 애초에 피할 공간이 없다.
- * 가리는 쪽을 비워주면 카메라를 고정할 수 있고, 화면이 안정된다.
- * (가림 처리는 MazeScene.updateWallOcclusion 에 있다.)
+ *  1) 벽 밖으로 밀어낸다 — 시선 방향으로 당기는 게 아니라 옆으로 밀어낸다.
+ *  2) 그래도 가리는 벽은 반투명하게 만든다 (MazeScene.updateWallOcclusion).
+ *
+ * 거리를 줄이는 방식은 좁은 통로에서 값이 쉴 새 없이 변해 어색했다.
+ * 그렇다고 아무 처리도 안 하면 카메라가 벽 "안"에 들어가고, 그 벽이 투명해지면서
+ * 벽 너머 통로까지 들여다보이게 된다. 옆으로 밀어내면 거리는 거의 유지되면서
+ * 카메라가 항상 걸어다닐 수 있는 공간에 머문다.
  */
+/** 카메라를 벽에서 밀어낼 때 쓰는 반지름. 플레이어보다 크게 잡아야 벽에 코를 박지 않는다. */
+const CAMERA_RADIUS = 1.1
 
 const MIN_PITCH = -0.9
 const MAX_PITCH = 1.1
@@ -42,6 +47,8 @@ export class CameraController {
   pitch = 0.25
   /** 마지막으로 적용한 카메라-캐릭터 평면 거리. 계측과 캐릭터 표시 판단에 쓴다. */
   private planarDistance = THIRD_DISTANCE
+  /** 벽 밖으로 밀어낸 결과를 담는 재사용 객체. 매 프레임 새로 만들지 않는다. */
+  private readonly resolved = { x: 0, z: 0 }
   /** 계측용. scripts/camera-probe.mjs 가 회전 시 거리 변화를 재는 데 쓴다. */
   debugScale = 1
   debugOvershoot = 0
@@ -95,8 +102,14 @@ export class CameraController {
 
     // 미로 바깥으로는 나가지 않게 막는다. 밖으로 나가면 아무것도 없는 공간이 보인다.
     const margin = 0.4
-    const camX = clamp(playerX + offsetX, margin, maze.w * CELL - margin)
-    const camZ = clamp(playerZ + offsetZ, margin, maze.h * CELL - margin)
+    const idealX = clamp(playerX + offsetX, margin, maze.w * CELL - margin)
+    const idealZ = clamp(playerZ + offsetZ, margin, maze.h * CELL - margin)
+
+    // 벽 안에 들어가 있으면 옆으로 밀어낸다. 거리를 줄이는 게 아니라 밀어내는 거라
+    // 캐릭터와의 거리는 거의 그대로 유지된다.
+    resolveCircle(maze, idealX, idealZ, CAMERA_RADIUS, this.resolved)
+    const camX = this.resolved.x
+    const camZ = this.resolved.z
     this.planarDistance = Math.hypot(camX - playerX, camZ - playerZ)
     this.debugScale = 1
     this.debugOvershoot = 0

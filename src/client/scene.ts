@@ -217,7 +217,8 @@ export class MazeScene {
       ghost.diffuseColor = new Color3(0.5, 0.56, 0.72)
       ghost.emissiveColor = new Color3(0.12, 0.14, 0.2)
       ghost.specularColor = new Color3(0, 0, 0)
-      ghost.alpha = 0.18
+      // 너무 투명하면 벽 너머 통로까지 들여다보인다. 캐릭터가 비칠 만큼만 연다.
+      ghost.alpha = 0.34
       ghost.backFaceCulling = false
       // 반투명 벽 때문에 뒤쪽 물체가 가려지면 안 된다.
       ghost.disableDepthWrite = true
