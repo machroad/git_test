@@ -294,3 +294,12 @@ body {
     transition: none;
   }
 }
+
+/* 드래그로 시점을 돌리는 중임을 커서로 알린다. */
+.view__scene {
+  cursor: grab;
+}
+
+.view__scene.is-dragging {
+  cursor: grabbing;
+}

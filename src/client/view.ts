@@ -84,7 +84,7 @@ export class GameView {
 
   /** 매 프레임 호출. dt 는 초 단위. */
   frame(dt: number): void {
-    const look = this.input.consumeLook()
+    const look = this.input.consumeLook(dt)
     if (look.yaw !== 0 || look.pitch !== 0) this.camera.rotate(look.yaw, look.pitch)
 
     const intent = this.input.moveIntent()
@@ -140,10 +140,13 @@ export class GameView {
       this.centerEl.textContent = '탈출 완료 — 남은 팀원을 기다리는 중'
     } else if (!this.active) {
       this.centerEl.textContent = '이 화면을 클릭하면 조작합니다'
-    } else if (!this.input.hasPointerLock()) {
+    } else if (this.input.hasPointerLock()) {
+      this.centerEl.textContent = ''
+    } else if (this.input.canUsePointerLock()) {
       this.centerEl.textContent = '클릭하면 마우스로 시점을 돌립니다 · WASD 이동 · V 시점 전환'
     } else {
-      this.centerEl.textContent = ''
+      // Pointer Lock 이 막힌 환경(샌드박스 iframe 등). 드래그 조작을 안내한다.
+      this.centerEl.textContent = '드래그해서 시점 회전 · WASD 이동 · Q/E 좌우 회전 · V 시점 전환'
     }
   }
 }

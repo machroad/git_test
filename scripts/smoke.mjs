@@ -277,6 +277,70 @@ try {
   check('gamepad 차단 환경에서 페이지 예외 없음', blockedErrors.length === 0, blockedErrors.slice(0, 2).join(' | '))
   await blocked.screenshot({ path: join(SHOTS, '05-gamepad-blocked.png') })
   await blocked.close()
+  console.log('\n[4] Pointer Lock 이 막힌 환경 — 드래그로 시점 회전')
+  // Artifact 뷰어처럼 샌드박스된 iframe 은 permissions policy 로 pointer-lock 도 막는다.
+  // 그러면 requestPointerLock() 이 거부되고, movementX 기반 시점 회전이 통째로 죽는다.
+  // 이때 클릭 드래그로 시점이 돌아가야 한다.
+  const noLock = await browser.newPage({ viewport: { width: 1024, height: 720 } })
+  const noLockErrors = []
+  noLock.on('pageerror', (error) => noLockErrors.push(String(error)))
+  await noLock.addInitScript(() => {
+    // 실제 차단 환경과 같게: 호출은 거부되고 pointerLockElement 는 계속 null 이다.
+    Object.defineProperty(HTMLCanvasElement.prototype, 'requestPointerLock', {
+      configurable: true,
+      value() {
+        return Promise.reject(new Error('pointer lock is disallowed by permissions policy'))
+      },
+    })
+  })
+  await noLock.goto(`http://localhost:${PORT}/?views=1`, { waitUntil: 'load' })
+  await noLock.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, {
+    timeout: 20000,
+  })
+
+  const box = await noLock.locator('.view__scene').boundingBox()
+  const centerX = box.x + box.width / 2
+  const centerY = box.y + box.height / 2
+
+  const yawBefore = await noLock.evaluate(() => window.__game.views[0].camera.yaw)
+
+  // 드래그하지 않고 마우스만 움직였을 때는 시점이 돌아가면 안 된다.
+  await noLock.mouse.move(centerX, centerY)
+  await noLock.mouse.move(centerX + 200, centerY)
+  await noLock.waitForTimeout(300)
+  const yawHover = await noLock.evaluate(() => window.__game.views[0].camera.yaw)
+  check('버튼을 누르지 않은 이동은 시점을 돌리지 않음', Math.abs(yawHover - yawBefore) < 1e-6)
+
+  // 누른 채 끌면 돌아가야 한다.
+  await noLock.mouse.move(centerX, centerY)
+  await noLock.mouse.down()
+  for (let i = 1; i <= 8; i++) {
+    await noLock.mouse.move(centerX + i * 25, centerY + i * 4)
+  }
+  await noLock.mouse.up()
+  await noLock.waitForTimeout(300)
+
+  const afterDrag = await noLock.evaluate(() => ({
+    yaw: window.__game.views[0].camera.yaw,
+    pitch: window.__game.views[0].camera.pitch,
+    hint: document.querySelector('.hud__center')?.textContent ?? '',
+  }))
+  const yawDelta = Math.abs(afterDrag.yaw - yawHover)
+  check('드래그로 좌우 시점이 회전함', yawDelta > 0.3, `(yaw 변화 ${yawDelta.toFixed(2)})`)
+  check('드래그 안내 문구가 표시됨', afterDrag.hint.includes('드래그'), `(문구: "${afterDrag.hint}")`)
+
+  // 키보드 대안(Q/E)도 동작해야 한다.
+  const yawBeforeKey = afterDrag.yaw
+  await noLock.keyboard.down('e')
+  await noLock.waitForTimeout(500)
+  await noLock.keyboard.up('e')
+  const yawAfterKey = await noLock.evaluate(() => window.__game.views[0].camera.yaw)
+  check('Q/E 키로도 시점이 회전함', Math.abs(yawAfterKey - yawBeforeKey) > 0.2,
+    `(yaw 변화 ${Math.abs(yawAfterKey - yawBeforeKey).toFixed(2)})`)
+
+  check('pointer lock 차단 환경에서 예외 없음', noLockErrors.length === 0, noLockErrors.slice(0, 2).join(' | '))
+  await noLock.screenshot({ path: join(SHOTS, '06-drag-look.png') })
+  await noLock.close()
 } finally {
   await browser.close()
   server.close()
