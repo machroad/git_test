@@ -1,0 +1,331 @@
+/**
+ * Babylon.js 렌더링.
+ *
+ * 게임 상태를 받아 그리기만 한다. 여기에는 게임 규칙이 없다.
+ * 벽은 thin instance 로 한 번에 그려서, 미로가 41x41 로 커져도 드로우콜이 늘지 않는다.
+ */
+import { Engine } from '@babylonjs/core/Engines/engine'
+import { Scene } from '@babylonjs/core/scene'
+import { Vector3, Matrix } from '@babylonjs/core/Maths/math.vector'
+import { Color3, Color4 } from '@babylonjs/core/Maths/math.color'
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial'
+import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture'
+import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight'
+import { PointLight } from '@babylonjs/core/Lights/pointLight'
+import { UniversalCamera } from '@babylonjs/core/Cameras/universalCamera'
+import { CreateBox } from '@babylonjs/core/Meshes/Builders/boxBuilder'
+import { CreateGround } from '@babylonjs/core/Meshes/Builders/groundBuilder'
+import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder'
+import { CreateSphere } from '@babylonjs/core/Meshes/Builders/sphereBuilder'
+import { CreateTorus } from '@babylonjs/core/Meshes/Builders/torusBuilder'
+import type { Mesh } from '@babylonjs/core/Meshes/mesh'
+import type { TransformNode } from '@babylonjs/core/Meshes/transformNode'
+// thinInstance* API 를 쓰려면 사이드이펙트 임포트가 필요하다.
+import '@babylonjs/core/Meshes/thinInstanceMesh'
+
+import { CELL, EYE_H, WALL_H, WALL_T } from '../shared/constants'
+import { cellToWorld, collectAllWalls, type Maze } from '../shared/maze'
+import type { RenderKey, RenderPlayer } from '../game/client-state'
+
+/** 플레이어 색. id 순서대로 배정된다. */
+export const PLAYER_COLORS: [number, number, number][] = [
+  [0.35, 0.75, 1.0],
+  [1.0, 0.62, 0.3],
+  [0.55, 1.0, 0.55],
+  [1.0, 0.5, 0.75],
+]
+
+export function playerColor(id: number): Color3 {
+  const c = PLAYER_COLORS[(id - 1 + PLAYER_COLORS.length) % PLAYER_COLORS.length]
+  return new Color3(c[0], c[1], c[2])
+}
+
+interface PlayerVisual {
+  root: TransformNode
+  body: Mesh
+  nose: Mesh
+}
+
+export class MazeScene {
+  readonly engine: Engine
+  readonly scene: Scene
+  readonly camera: UniversalCamera
+
+  private wallMesh: Mesh | null = null
+  private ground: Mesh | null = null
+  private exitMesh: Mesh | null = null
+  private exitMaterial: StandardMaterial
+  private keyMeshes: Mesh[] = []
+  private keyMaterial: StandardMaterial
+  private players = new Map<number, PlayerVisual>()
+  private torch: PointLight
+  private wallMaterial: StandardMaterial
+  private groundMaterial: StandardMaterial
+  private elapsed = 0
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.engine = new Engine(canvas, true, {
+      preserveDrawingBuffer: false,
+      stencil: false,
+      // 여러 뷰를 동시에 띄울 때 컨텍스트 손실 복구가 필요하다.
+      doNotHandleContextLost: false,
+    })
+    this.scene = new Scene(this.engine)
+    this.scene.clearColor = new Color4(0.03, 0.04, 0.07, 1)
+
+    // 미로다운 답답함과 시야 제한을 위해 안개를 깐다. 성능에도 도움이 된다.
+    this.scene.fogMode = Scene.FOGMODE_EXP2
+    this.scene.fogColor = new Color3(0.03, 0.04, 0.07)
+    this.scene.fogDensity = 0.026
+
+    this.camera = new UniversalCamera('camera', new Vector3(0, EYE_H, 0), this.scene)
+    this.camera.minZ = 0.1
+    this.camera.maxZ = 200
+    this.camera.fov = 1.15
+    // 카메라 조작은 직접 계산해서 넣는다.
+    this.camera.inputs.clear()
+
+    const ambient = new HemisphericLight('ambient', new Vector3(0, 1, 0), this.scene)
+    ambient.intensity = 0.45
+    ambient.diffuse = new Color3(0.6, 0.68, 0.9)
+    ambient.groundColor = new Color3(0.1, 0.1, 0.16)
+
+    this.torch = new PointLight('torch', new Vector3(0, EYE_H, 0), this.scene)
+    this.torch.intensity = 1.2
+    this.torch.range = 22
+    this.torch.diffuse = new Color3(1, 0.94, 0.8)
+
+    // 단색 벽은 1인칭에서 화면이 통째로 한 가지 색이 되어 방향 감각이 사라진다.
+    // 가로 줄무늬를 넣으면 벽 길이와 상관없이 늘어나도 자연스럽고, 거리감이 생긴다.
+    this.wallMaterial = new StandardMaterial('wall', this.scene)
+    this.wallMaterial.diffuseTexture = createStripeTexture(this.scene)
+    this.wallMaterial.diffuseColor = new Color3(0.62, 0.66, 0.82)
+    this.wallMaterial.specularColor = new Color3(0.05, 0.05, 0.06)
+
+    // 바닥 격자는 칸 경계를 보여줘서 이동 거리를 가늠하게 해준다.
+    this.groundMaterial = new StandardMaterial('ground', this.scene)
+    this.groundMaterial.diffuseTexture = createGridTexture(this.scene)
+    this.groundMaterial.diffuseColor = new Color3(0.3, 0.33, 0.42)
+    this.groundMaterial.specularColor = new Color3(0, 0, 0)
+
+    this.exitMaterial = new StandardMaterial('exit', this.scene)
+    this.exitMaterial.specularColor = new Color3(0, 0, 0)
+
+    this.keyMaterial = new StandardMaterial('key', this.scene)
+    this.keyMaterial.diffuseColor = new Color3(1, 0.85, 0.25)
+    this.keyMaterial.emissiveColor = new Color3(0.8, 0.62, 0.1)
+    this.keyMaterial.specularColor = new Color3(0, 0, 0)
+  }
+
+  /** 레벨이 바뀔 때마다 호출. 기존 미로 메시를 버리고 새로 만든다. */
+  buildMaze(maze: Maze): void {
+    this.wallMesh?.dispose()
+    this.ground?.dispose()
+    this.exitMesh?.dispose()
+    for (const mesh of this.keyMeshes) mesh.dispose()
+    this.keyMeshes = []
+
+    const width = maze.w * CELL
+    const depth = maze.h * CELL
+
+    this.ground = CreateGround('ground', { width, height: depth }, this.scene)
+    this.ground.position.set(width / 2, 0, depth / 2)
+    this.ground.material = this.groundMaterial
+    // 격자 한 칸이 미로 한 칸과 맞아떨어지게 타일링한다.
+    const groundTexture = this.groundMaterial.diffuseTexture as DynamicTexture | null
+    if (groundTexture) {
+      groundTexture.uScale = maze.w
+      groundTexture.vScale = maze.h
+    }
+    this.ground.freezeWorldMatrix()
+    this.ground.isPickable = false
+
+    const walls = collectAllWalls(maze)
+    const base = CreateBox('wall', { size: 1 }, this.scene)
+    base.material = this.wallMaterial
+    base.isPickable = false
+
+    const matrices = new Float32Array(walls.length * 16)
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i]
+      const sx = Math.max(w.maxX - w.minX, WALL_T)
+      const sz = Math.max(w.maxZ - w.minZ, WALL_T)
+      const cx = (w.minX + w.maxX) / 2
+      const cz = (w.minZ + w.maxZ) / 2
+      const matrix = Matrix.Scaling(sx, WALL_H, sz).multiply(
+        Matrix.Translation(cx, WALL_H / 2, cz),
+      )
+      matrix.copyToArray(matrices, i * 16)
+    }
+    base.thinInstanceSetBuffer('matrix', matrices, 16, true)
+    base.freezeWorldMatrix()
+    this.wallMesh = base
+
+    // 탈출구
+    const exitPos = cellToWorld(maze.exit)
+    this.exitMesh = CreateCylinder('exit', { diameter: CELL * 0.7, height: 0.12, tessellation: 24 }, this.scene)
+    this.exitMesh.position.set(exitPos.x, 0.06, exitPos.z)
+    this.exitMesh.material = this.exitMaterial
+    this.exitMesh.isPickable = false
+
+    // 열쇠
+    for (let i = 0; i < maze.keys.length; i++) {
+      const mesh = CreateTorus(`key${i}`, { diameter: 0.7, thickness: 0.18, tessellation: 18 }, this.scene)
+      mesh.material = this.keyMaterial
+      mesh.isPickable = false
+      this.keyMeshes.push(mesh)
+    }
+  }
+
+  syncPlayers(renderPlayers: RenderPlayer[]): void {
+    const seen = new Set<number>()
+
+    for (const player of renderPlayers) {
+      seen.add(player.id)
+      let visual = this.players.get(player.id)
+      if (!visual) {
+        visual = this.createPlayerVisual(player.id)
+        this.players.set(player.id, visual)
+      }
+      visual.root.position.set(player.x, 0, player.z)
+      visual.root.rotation.y = player.yaw
+      // 탈출한 플레이어는 미로에서 사라진다.
+      visual.body.setEnabled(!player.escaped)
+      visual.nose.setEnabled(!player.escaped)
+      // 1인칭에서 자기 몸이 화면을 가리지 않도록 로컬 플레이어는 숨긴다.
+      // 3인칭 전환 시 다시 켜는 것은 updateCamera 쪽에서 처리한다.
+    }
+
+    for (const [id, visual] of this.players) {
+      if (seen.has(id)) continue
+      visual.root.dispose()
+      this.players.delete(id)
+    }
+  }
+
+  /** 1인칭일 때 자기 몸이 카메라를 가리므로 감춘다. */
+  setLocalBodyVisible(localId: number, visible: boolean): void {
+    const visual = this.players.get(localId)
+    if (!visual) return
+    visual.body.setEnabled(visible)
+    visual.nose.setEnabled(visible)
+  }
+
+  syncKeys(keys: RenderKey[], exitOpen: boolean, dt: number): void {
+    this.elapsed += dt
+
+    for (let i = 0; i < this.keyMeshes.length; i++) {
+      const mesh = this.keyMeshes[i]
+      const key = keys[i]
+      if (!key) {
+        mesh.setEnabled(false)
+        continue
+      }
+      mesh.setEnabled(true)
+      // 들려 있으면 머리 위로 올라간다. 누가 열쇠를 가졌는지 멀리서도 보인다.
+      const height = key.collected ? 2.1 : 0.9 + Math.sin(this.elapsed * 2) * 0.12
+      mesh.position.set(key.x, height, key.z)
+      mesh.rotation.y = this.elapsed * 1.6
+      mesh.rotation.x = Math.PI / 2
+    }
+
+    if (this.exitMesh) {
+      const color = exitOpen ? new Color3(0.3, 1, 0.45) : new Color3(1, 0.28, 0.3)
+      this.exitMaterial.diffuseColor = color
+      const pulse = exitOpen ? 0.5 + Math.sin(this.elapsed * 4) * 0.25 : 0.22
+      this.exitMaterial.emissiveColor = color.scale(pulse)
+    }
+  }
+
+  /** 로컬 플레이어 위치에 손전등을 붙인다. */
+  setTorch(x: number, z: number): void {
+    this.torch.position.set(x, EYE_H + 0.3, z)
+  }
+
+  /**
+   * engine.runRenderLoop 을 쓰지 않고 직접 렌더한다.
+   * 뷰가 여러 개일 때 프레임 순서를 우리가 통제해야 하기 때문이다.
+   * 그 경우 beginFrame / endFrame 을 직접 감싸줘야 한다.
+   */
+  render(): void {
+    this.engine.beginFrame()
+    this.scene.render()
+    this.engine.endFrame()
+  }
+
+  resize(): void {
+    this.engine.resize()
+  }
+
+  dispose(): void {
+    this.scene.dispose()
+    this.engine.dispose()
+  }
+
+  private createPlayerVisual(id: number): PlayerVisual {
+    const color = playerColor(id)
+
+    const body = CreateCylinder(`player${id}`, { diameter: 0.9, height: 1.5, tessellation: 12 }, this.scene)
+    const material = new StandardMaterial(`playerMat${id}`, this.scene)
+    material.diffuseColor = color
+    material.emissiveColor = color.scale(0.25)
+    material.specularColor = new Color3(0.1, 0.1, 0.1)
+    body.material = material
+    body.position.y = 0.75
+    body.isPickable = false
+
+    // 어느 쪽을 보는지 알려주는 표식. 3인칭에서 방향 감각에 꽤 중요하다.
+    const nose = CreateSphere(`nose${id}`, { diameter: 0.32, segments: 8 }, this.scene)
+    nose.material = material
+    nose.position.set(0, 1.15, 0.42)
+    nose.isPickable = false
+
+    const root = CreateBox(`root${id}`, { size: 0.001 }, this.scene)
+    root.isVisible = false
+    root.isPickable = false
+    body.parent = root
+    nose.parent = root
+
+    return { root, body, nose }
+  }
+}
+
+/** 벽면용 가로 줄무늬. 벽 길이에 따라 늘어나도 가로 방향이라 티가 나지 않는다. */
+function createStripeTexture(scene: Scene): DynamicTexture {
+  const size = 128
+  const texture = new DynamicTexture('wallTex', { width: size, height: size }, scene, false)
+  const ctx = texture.getContext() as unknown as CanvasRenderingContext2D
+
+  ctx.fillStyle = '#6b7186'
+  ctx.fillRect(0, 0, size, size)
+
+  // 벽돌층처럼 보이도록 밝기가 조금씩 다른 가로 띠를 쌓는다.
+  const bands = 8
+  for (let i = 0; i < bands; i++) {
+    const shade = 0.82 + ((i * 37) % 11) / 40
+    const v = Math.round(107 * shade)
+    ctx.fillStyle = `rgb(${v}, ${Math.round(v * 1.05)}, ${Math.round(v * 1.24)})`
+    ctx.fillRect(0, (i * size) / bands, size, size / bands - 2)
+  }
+
+  texture.update()
+  texture.uScale = 1
+  texture.vScale = 1
+  return texture
+}
+
+/** 바닥용 격자. 한 타일이 미로 한 칸에 대응한다. */
+function createGridTexture(scene: Scene): DynamicTexture {
+  const size = 128
+  const texture = new DynamicTexture('groundTex', { width: size, height: size }, scene, false)
+  const ctx = texture.getContext() as unknown as CanvasRenderingContext2D
+
+  ctx.fillStyle = '#3a4054'
+  ctx.fillRect(0, 0, size, size)
+  ctx.strokeStyle = '#525a75'
+  ctx.lineWidth = 4
+  ctx.strokeRect(2, 2, size - 4, size - 4)
+
+  texture.update()
+  return texture
+}

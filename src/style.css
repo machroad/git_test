@@ -1,0 +1,296 @@
+:root {
+  --hud-bg: rgba(10, 13, 22, 0.72);
+  --hud-border: rgba(160, 190, 240, 0.22);
+  --hud-text: #e8eefc;
+  --accent: #6fd3ff;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #05070d;
+  color: var(--hud-text);
+  font-family: 'Pretendard', 'Apple SD Gothic Neo', 'Noto Sans KR', system-ui, sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+.stage {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  gap: 2px;
+  background: #12161f;
+}
+
+.stage--1 {
+  grid-template-columns: 1fr;
+}
+.stage--2 {
+  grid-template-columns: 1fr 1fr;
+}
+.stage--4 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.view {
+  position: relative;
+  overflow: hidden;
+  background: #05070d;
+}
+
+.view__scene {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  touch-action: none;
+}
+
+/* 조작 대상 화면을 테두리로 표시한다. 멀티뷰에서 헷갈리지 않게. */
+.view.is-active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid rgba(111, 211, 255, 0.55);
+  pointer-events: none;
+}
+
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.hud__topleft {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.switcher {
+  display: flex;
+  pointer-events: auto;
+  border: 1px solid var(--hud-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--hud-bg);
+  backdrop-filter: blur(6px);
+}
+
+.switcher button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--hud-text);
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.switcher button + button {
+  border-left: 1px solid var(--hud-border);
+}
+
+.switcher button:hover {
+  background: rgba(111, 211, 255, 0.14);
+}
+
+.switcher button.is-on {
+  background: rgba(111, 211, 255, 0.28);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.status {
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.view__label {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.hud__center {
+  position: absolute;
+  left: 50%;
+  bottom: 15%;
+  transform: translateX(-50%);
+  text-align: center;
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: rgba(10, 13, 22, 0.6);
+  max-width: 80%;
+  text-wrap: balance;
+}
+
+.hud__center:empty {
+  display: none;
+}
+
+.hud__minimap {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: clamp(120px, 18vw, 210px);
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--hud-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(6, 8, 14, 0.8);
+}
+
+.hud__minimap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 화면이 4분할이면 HUD 를 줄여서 시야를 확보한다. */
+.stage--4 .hud {
+  font-size: 11px;
+}
+.stage--4 .switcher button {
+  padding: 4px 9px;
+  font-size: 11px;
+}
+.stage--4 .hud__minimap {
+  width: clamp(90px, 13vw, 140px);
+}
+
+.debug {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  width: 190px;
+  padding: 10px 12px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  border-radius: 10px;
+  font-size: 12px;
+  backdrop-filter: blur(6px);
+}
+
+.debug__title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+
+.debug label {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.debug input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.debug__views {
+  border-top: 1px solid var(--hud-border);
+  padding-top: 8px;
+  opacity: 0.85;
+}
+
+.debug__views a {
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0 2px;
+}
+
+.debug__views a:hover {
+  text-decoration: underline;
+}
+
+.boot-banner {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 14px 20px;
+  border-radius: 10px;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-border);
+  max-width: 70vw;
+  text-align: center;
+}
+
+.boot-banner--error {
+  border-color: rgba(255, 120, 120, 0.6);
+  color: #ffc9c9;
+}
+
+/* 멀티뷰에서는 디버그 패널이 첫 화면의 라벨과 겹친다. 살짝 내려준다. */
+.stage--2 ~ .debug,
+.stage--4 ~ .debug {
+  top: 52px;
+}
+
+.hud__crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  display: none;
+}
+
+.hud__crosshair.is-on {
+  display: block;
+}
+
+/* 키보드 포커스가 보이지 않으면 마우스 없이 시점 버튼을 쓸 수 없다. */
+.switcher button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.debug a:focus-visible,
+.debug input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switcher button {
+    transition: none;
+  }
+}
