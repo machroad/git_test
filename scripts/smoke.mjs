@@ -242,6 +242,41 @@ try {
   await quad.screenshot({ path: join(SHOTS, '03-quad-view.png') })
   check('4분할 콘솔 에러 없음', quadErrors.length === 0, quadErrors.slice(0, 3).join(' | '))
   await quad.close()
+  console.log('\n[3] Gamepad API 가 막힌 환경 (Artifact 뷰어 재현)')
+  // Artifact 뷰어처럼 샌드박스된 iframe 에서는 permissions policy 로 gamepad 가 막힌다.
+  // Babylon 이 초기화 중 navigator.getGamepads() 를 부르다 예외를 맞으면
+  // 엔진 생성이 실패하고 화면이 통째로 뜨지 않는다. 실제로 겪은 버그라 고정해 둔다.
+  const blocked = await browser.newPage({ viewport: { width: 1024, height: 720 } })
+  const blockedErrors = []
+  blocked.on('pageerror', (error) => blockedErrors.push(String(error)))
+  await blocked.addInitScript(() => {
+    Object.defineProperty(navigator, 'getGamepads', {
+      configurable: true,
+      value: () => {
+        throw new Error(
+          `Failed to execute 'getGamepads' on 'Navigator': ` +
+            `Access to the feature "gamepad" is disallowed by permissions policy.`,
+        )
+      },
+    })
+  })
+  await blocked.goto(`http://localhost:${PORT}/?views=1`, { waitUntil: 'load' })
+
+  let blockedBooted = true
+  try {
+    await blocked.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, {
+      timeout: 20000,
+    })
+  } catch {
+    blockedBooted = false
+  }
+  const bootBanner = await blocked.evaluate(
+    () => document.querySelector('.boot-banner--error')?.textContent ?? null,
+  )
+  check('gamepad 차단 환경에서도 정상 부팅', blockedBooted && bootBanner === null, bootBanner ?? '')
+  check('gamepad 차단 환경에서 페이지 예외 없음', blockedErrors.length === 0, blockedErrors.slice(0, 2).join(' | '))
+  await blocked.screenshot({ path: join(SHOTS, '05-gamepad-blocked.png') })
+  await blocked.close()
 } finally {
   await browser.close()
   server.close()

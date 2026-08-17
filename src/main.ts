@@ -10,6 +10,7 @@
  *   ?lat=120&jitter=20&loss=0.05   인프로세스 전송에 주입할 네트워크 조건
  */
 import './style.css'
+import { installBrowserCompat } from './client/compat'
 import { GameHost } from './game/host'
 import { InProcessHub } from './net/in-process'
 import { connectWebSocket } from './net/websocket'
@@ -26,6 +27,9 @@ declare global {
     }
   }
 }
+
+// Babylon 엔진을 만들기 전에 실행해야 한다.
+installBrowserCompat()
 
 const params = new URLSearchParams(location.search)
 const viewCount = clampViews(Number(params.get('views') ?? '1'))
