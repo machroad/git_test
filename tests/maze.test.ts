@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CELL, OCCLUSION_PAD, PLAYER_R } from '../src/shared/constants'
 import {
   E,
   N,
@@ -6,10 +7,14 @@ import {
   W,
   bfsDistances,
   cellIndex,
+  collectAllWalls,
   createLobbyMaze,
+  cellToWorld,
   generateMaze,
   hasWall,
+  resolveCircle,
   roomCountForSize,
+  segmentHitsBox,
 } from '../src/shared/maze'
 
 describe('미로 생성', () => {
@@ -247,5 +252,73 @@ describe('로비', () => {
       expect(hasWall(lobby, 0, y, W)).toBe(true)
       expect(hasWall(lobby, lobby.w - 1, y, E)).toBe(true)
     }
+  })
+})
+
+describe('가림 판정', () => {
+  /**
+   * 카메라와 캐릭터 사이를 가로막는 벽만 골라야 한다.
+   *
+   * 여유(OCCLUSION_PAD)가 플레이어 반경보다 크면, 플레이어가 붙어 선 벽까지
+   * 선분에 걸려서 캐릭터 "앞"의 벽마저 투명해진다. 실제로 0.6 으로 뒀을 때
+   * 표본의 54.5% 에서 앞벽이 뚫렸다.
+   */
+  function scanFrontWallHits(pad: number): { total: number; frontHits: number } {
+    const maze = generateMaze(15, 15, 777)
+    const boxes = collectAllWalls(maze)
+    const out = { x: 0, z: 0 }
+    let total = 0
+    let frontHits = 0
+
+    for (let cy = 1; cy < maze.h - 1; cy++) {
+      for (let cx = 1; cx < maze.w - 1; cx++) {
+        const center = cellToWorld({ x: cx, y: cy })
+        for (let i = 0; i < 16; i++) {
+          const yaw = (i / 16) * Math.PI * 2
+          const fx = Math.sin(yaw)
+          const fz = Math.cos(yaw)
+          // 바라보는 방향으로 최대한 밀어붙인다 = 벽에 붙어 선 상태
+          resolveCircle(maze, center.x + fx * CELL * 0.45, center.z + fz * CELL * 0.45, PLAYER_R, out)
+          const camX = out.x - fx * 3.4
+          const camZ = out.z - fz * 3.4
+
+          total++
+          for (const box of boxes) {
+            if (!segmentHitsBox(camX, camZ, out.x, out.z, box, pad)) continue
+            const bx = (box.minX + box.maxX) / 2 - out.x
+            const bz = (box.minZ + box.maxZ) / 2 - out.z
+            if (bx * fx + bz * fz > 0.5) {
+              frontHits++
+              break
+            }
+          }
+        }
+      }
+    }
+    return { total, frontHits }
+  }
+
+  it('여유는 플레이어 반경보다 작아야 한다', () => {
+    expect(OCCLUSION_PAD).toBeLessThan(PLAYER_R)
+  })
+
+  it('플레이어가 붙어 선 앞쪽 벽은 가림 대상이 아니다', () => {
+    const { total, frontHits } = scanFrontWallHits(OCCLUSION_PAD)
+    expect(total).toBeGreaterThan(1000)
+    expect(frontHits).toBe(0)
+  })
+
+  it('여유가 플레이어 반경보다 크면 앞쪽 벽이 걸린다 (회귀 근거)', () => {
+    // 이 테스트가 실패한다면 위 조건이 우연히 성립한 게 아니라는 근거가 사라진 것이다.
+    expect(scanFrontWallHits(PLAYER_R * 1.2).frontHits).toBeGreaterThan(0)
+  })
+
+  it('사이에 있는 벽은 정상적으로 잡힌다', () => {
+    const box = { minX: -1, maxX: 1, minZ: -1, maxZ: 1 }
+    expect(segmentHitsBox(-5, 0, 5, 0, box, 0)).toBe(true)
+    // 선분이 상자 앞에서 끝나면 걸리지 않는다.
+    expect(segmentHitsBox(-5, 0, -3, 0, box, 0)).toBe(false)
+    // 옆으로 비껴가면 걸리지 않는다.
+    expect(segmentHitsBox(-5, 5, 5, 5, box, 0)).toBe(false)
   })
 })

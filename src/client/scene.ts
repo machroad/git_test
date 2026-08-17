@@ -24,7 +24,7 @@ import type { TransformNode } from '@babylonjs/core/Meshes/transformNode'
 // thinInstance* API 를 쓰려면 사이드이펙트 임포트가 필요하다.
 import '@babylonjs/core/Meshes/thinInstanceMesh'
 
-import { CELL, EYE_H, WALL_H, WALL_T } from '../shared/constants'
+import { CELL, EYE_H, OCCLUSION_PAD, WALL_H, WALL_T } from '../shared/constants'
 import {
   ATTACK_HALF_ANGLE,
   ATTACK_RANGE,
@@ -32,7 +32,7 @@ import {
   EnemyKind,
   type EnemyKindValue,
 } from '../shared/combat'
-import { cellToWorld, collectAllWalls, type Aabb, type Maze } from '../shared/maze'
+import { cellToWorld, collectAllWalls, segmentHitsBox, type Aabb, type Maze } from '../shared/maze'
 import type { RenderEnemy, RenderKey, RenderPlayer, RenderProjectile } from '../game/client-state'
 
 /** 플레이어 색. id 순서대로 배정된다. */
@@ -615,52 +615,12 @@ export class MazeScene {
   }
 }
 
-/** 가림 판정에 쓰는 여유. 살짝 스치는 벽도 비워야 화면 가장자리에서 깜빡이지 않는다. */
-const OCCLUSION_PAD = 0.6
 const ZERO_MATRIX = Matrix.Scaling(0, 0, 0)
 
 /** 두 집합이 같은지. 가리는 벽이 그대로면 버퍼를 건드리지 않는다. */
 function sameSet(a: Set<number>, b: Set<number>): boolean {
   if (a.size !== b.size) return false
   for (const value of a) if (!b.has(value)) return false
-  return true
-}
-
-/**
- * 선분이 AABB 를 지나는지 (XZ 평면, 슬랩 방식).
- * 벽은 바닥부터 천장까지 꽉 차 있어서 높이는 볼 필요가 없다.
- */
-function segmentHitsBox(
-  x0: number,
-  z0: number,
-  x1: number,
-  z1: number,
-  box: Aabb,
-  pad: number,
-): boolean {
-  const dx = x1 - x0
-  const dz = z1 - z0
-  let tmin = 0
-  let tmax = 1
-
-  const axes: [number, number, number, number][] = [
-    [x0, dx, box.minX - pad, box.maxX + pad],
-    [z0, dz, box.minZ - pad, box.maxZ + pad],
-  ]
-
-  for (const [origin, delta, lo, hi] of axes) {
-    if (Math.abs(delta) < 1e-6) {
-      // 그 축으로 움직이지 않으면 시작점이 구간 안에 있어야 한다.
-      if (origin < lo || origin > hi) return false
-      continue
-    }
-    let t1 = (lo - origin) / delta
-    let t2 = (hi - origin) / delta
-    if (t1 > t2) [t1, t2] = [t2, t1]
-    tmin = Math.max(tmin, t1)
-    tmax = Math.min(tmax, t2)
-    if (tmin > tmax) return false
-  }
   return true
 }
 

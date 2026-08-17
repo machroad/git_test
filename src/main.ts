@@ -11,7 +11,7 @@
  *   ?lat=120&jitter=20&loss=0.05   인프로세스 전송에 주입할 네트워크 조건
  */
 import './style.css'
-import { CELL } from './shared/constants'
+import { CELL, PLAYER_SPEED, TICK_DT } from './shared/constants'
 import { installBrowserCompat } from './client/compat'
 import { debugSettings } from './client/debug-settings'
 import { loadStoredConfig, showSetupScreen } from './client/setup-screen'
@@ -32,6 +32,8 @@ declare global {
       config: () => RunConfig
       /** 셀 크기. 테스트에서 셀 좌표를 월드 좌표로 바꿀 때 쓴다. */
       cell: number
+      /** 한 틱에 이동하는 거리. 예측 오차 기준을 속도에서 유도하기 위해 노출한다. */
+      tickDistance: number
     }
   }
 }
@@ -99,6 +101,7 @@ async function boot() {
     hub: () => hub,
     config: () => runConfig,
     cell: CELL,
+    tickDistance: PLAYER_SPEED * TICK_DT,
   }
   startRenderLoop()
   window.addEventListener('resize', () => {

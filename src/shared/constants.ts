@@ -50,6 +50,15 @@ export const EXIT_R = 2.2
 /** 상점 / 던전 입구에 반응하는 반경. */
 export const INTERACT_R = 3.2
 
+/**
+ * 가림 판정에 쓰는 여유. 선분이 벽을 살짝 스칠 때 깜빡이지 않게 해준다.
+ *
+ * 반드시 PLAYER_R 보다 작아야 한다. 크면 플레이어가 붙어 선 벽까지 선분에 걸려서,
+ * 캐릭터 "앞"에 있는 벽마저 투명해진다. resolveCircle 이 플레이어를 벽면에서 정확히
+ * PLAYER_R 만큼 떼어놓기 때문이다. (0.6 으로 뒀을 때 표본의 54.5% 에서 앞벽이 뚫렸다.)
+ */
+export const OCCLUSION_PAD = PLAYER_R * 0.6
+
 /** 원격 플레이어 렌더링 지연. 스냅샷 2개분 버퍼를 확보해 튐을 막는다. */
 export const INTERP_DELAY_MS = 100
 

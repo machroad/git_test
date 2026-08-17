@@ -201,12 +201,14 @@ try {
   const settled = driftSamples[driftSamples.length - 1]
   const maxDrift = Math.max(...driftSamples)
   // 예측은 호스트보다 (전송 지연 + 최대 한 틱) 만큼 앞서 있는 게 정상이다.
-  // 지연 0 이면 한 틱(50ms) 이동거리 = 0.3 단위 수준.
+  // 기준은 이동 속도에서 유도해야 한다. 절대값으로 박아두면 속도를 올렸을 때
+  // 게임이 멀쩡한데도 실패한다 (실제로 CELL 을 키우며 속도를 올렸을 때 그랬다).
+  const tickDistance = await page.evaluate(() => window.__game.tickDistance)
   // 모퉁이에서 순간적으로 튀는 값이 섞이므로 중앙값과 수렴값을 본다.
   check(
-    '예측이 호스트 권위 위치를 한 틱 이내로 따라감',
-    median < 0.8 && settled < 1.2,
-    `(중앙값 ${median.toFixed(2)} / 수렴 ${settled.toFixed(2)} / 최대 ${maxDrift.toFixed(2)})`,
+    '예측이 호스트 권위 위치를 두 틱 이내로 따라감',
+    median < tickDistance * 2.2 && settled < tickDistance * 3,
+    `(중앙값 ${median.toFixed(2)} / 수렴 ${settled.toFixed(2)} / 최대 ${maxDrift.toFixed(2)} / 한 틱 ${tickDistance.toFixed(2)})`,
   )
 
   // 시점 전환
@@ -437,11 +439,29 @@ try {
 
   const inkBefore = await countMinimapInk()
   await tools.click('.debug--tools input[data-flag="minimapRevealAll"]')
-  await tools.waitForTimeout(500)
-  const inkAfter = await countMinimapInk()
+  // 고정 대기로는 안 된다. 이 컨테이너는 몇 fps 밖에 안 나와서 500ms 안에
+  // 미니맵이 다시 그려지지 않는 경우가 있다. 실제로 늘어날 때까지 기다린다.
+  let inkAfter = inkBefore
+  const grew = await tools
+    .waitForFunction(
+      (before) => {
+        const canvas = document.querySelector('.hud__minimap canvas')
+        const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
+        let lit = 0
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] + data[i + 1] + data[i + 2] > 90) lit++
+        }
+        return lit > before * 1.5
+      },
+      inkBefore,
+      { timeout: 20000 },
+    )
+    .then(() => true)
+    .catch(() => false)
+  inkAfter = await countMinimapInk()
   check(
     '미니맵 전체 보기를 켜면 그려지는 영역이 늘어남',
-    inkAfter > inkBefore * 1.5,
+    grew,
     `(밝은 픽셀 ${inkBefore} → ${inkAfter})`,
   )
 
@@ -802,6 +822,55 @@ try {
   )
   check('가리는 벽이 반투명 사본으로 옮겨진다', ghost.exists && ghost.seenOccluder > 0,
     JSON.stringify(ghost))
+
+  // 회귀 방지: 카메라보다 플레이어에서 더 먼 벽 — 즉 캐릭터 "앞" 벽 — 은 시야를 가릴 수
+  // 없으므로 절대 투명해지면 안 된다. OCCLUSION_PAD 가 PLAYER_R 을 넘으면 플레이어가
+  // 붙어 선 앞벽이 선분 끝점에 걸려서 뚫린다. 그 상태를 여기서 잡는다.
+  const frontFade = await combat.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const view = window.__game.views[0]
+        let samples = 0
+        let violations = 0
+        let worst = 0
+        let steps = 0
+        const tick = () => {
+          // 돌면서 걸어야 벽에 붙은 자세가 골고루 나온다.
+          view.camera.rotate(0.29, 0)
+          const cam = view.scene.camera.position
+          const me = view.state.renderPosition()
+          if (me) {
+            const dx = me.x - cam.x
+            const dz = me.z - cam.z
+            const len = Math.hypot(dx, dz)
+            if (len > 0.2) {
+              const ux = dx / len
+              const uz = dz / len
+              for (const index of view.scene.occluding) {
+                const b = view.scene.wallBoxes[index]
+                const cx = (b.minX + b.maxX) / 2
+                const cz = (b.minZ + b.maxZ) / 2
+                // 카메라→플레이어 축 위로 투영. len 보다 크면 플레이어보다 뒤(앞벽)다.
+                const t = (cx - cam.x) * ux + (cz - cam.z) * uz
+                samples++
+                if (t > len + 1) {
+                  violations++
+                  worst = Math.max(worst, t - len)
+                }
+              }
+            }
+          }
+          if (++steps >= 40) resolve({ samples, violations, worst })
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+  )
+  check(
+    '플레이어 앞쪽 벽은 투명해지지 않는다',
+    frontFade.violations === 0,
+    `(투명 처리 ${frontFade.samples}건 중 앞벽 ${frontFade.violations}건, 최대 ${frontFade.worst.toFixed(2)} 초과)`,
+  )
 
   // 1인칭에서는 가릴 것이 없다.
   await combat.evaluate(() => window.__game.views[0].setMode('first'))

@@ -504,6 +504,46 @@ export function resolveCircle(
   out.z = pz
 }
 
+/**
+ * 선분이 AABB 를 지나는지 (XZ 평면, 슬랩 방식).
+ *
+ * 벽은 바닥부터 천장까지 꽉 차 있어서 높이는 볼 필요가 없다.
+ * 카메라와 캐릭터 사이를 가리는 벽을 고르는 데 쓴다.
+ */
+export function segmentHitsBox(
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  box: Aabb,
+  pad: number,
+): boolean {
+  const dx = x1 - x0
+  const dz = z1 - z0
+  let tmin = 0
+  let tmax = 1
+
+  const axes: [number, number, number, number][] = [
+    [x0, dx, box.minX - pad, box.maxX + pad],
+    [z0, dz, box.minZ - pad, box.maxZ + pad],
+  ]
+
+  for (const [origin, delta, lo, hi] of axes) {
+    if (Math.abs(delta) < 1e-6) {
+      // 그 축으로 움직이지 않으면 시작점이 구간 안에 있어야 한다.
+      if (origin < lo || origin > hi) return false
+      continue
+    }
+    let t1 = (lo - origin) / delta
+    let t2 = (hi - origin) / delta
+    if (t1 > t2) [t1, t2] = [t2, t1]
+    tmin = Math.max(tmin, t1)
+    tmax = Math.min(tmax, t2)
+    if (tmin > tmax) return false
+  }
+  return true
+}
+
 /** 두 월드 좌표 사이가 벽으로 막혀 있는지 (카메라 클리핑 방지용 근사). */
 export function segmentBlocked(maze: Maze, x0: number, z0: number, x1: number, z1: number): boolean {
   const dx = x1 - x0
