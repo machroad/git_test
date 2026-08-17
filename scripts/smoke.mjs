@@ -695,7 +695,52 @@ try {
   await combat.keyboard.up('Space')
   check('Space 로 앞의 적을 때린다', damaged, `(피격 전 ${hpBefore})`)
 
+  // 공격 범위 표시가 실제로 있고, 휘두를 때 밝아지는지.
+  // 직전 공격의 잔광이 남아 있으면 기준값이 오염되므로 먼저 가라앉기를 기다린다.
+  await combat.waitForFunction(
+    () => {
+      const cone = window.__game.views[0].scene.scene.getMeshByName('attackCone')
+      return cone && cone.isEnabled() && cone.material.alpha < 0.15
+    },
+    null,
+    { timeout: 20000 },
+  )
+  const coneIdle = await combat.evaluate(
+    () => window.__game.views[0].scene.scene.getMeshByName('attackCone').material.alpha,
+  )
+  check('공격 범위 표시가 평소에도 흐리게 깔린다', coneIdle > 0, `(알파 ${coneIdle.toFixed(3)})`)
+
+  await combat.keyboard.down('Space')
+  const coneBright = await combat
+    .waitForFunction(
+      (idle) => {
+        const cone = window.__game.views[0].scene.scene.getMeshByName('attackCone')
+        return cone && cone.material.alpha > idle * 2.5
+      },
+      coneIdle,
+      { timeout: 15000 },
+    )
+    .then(() => true)
+    .catch(() => false)
+  check('공격하면 범위 표시가 밝아진다', coneBright)
   await combat.screenshot({ path: join(SHOTS, '11-combat.png') })
+  await combat.keyboard.up('Space')
+
+  // 좁은 통로에서 카메라가 캐릭터 등에 붙는 대신 위로 올라가는지
+  const tight = await combat.evaluate(() => {
+    const view = window.__game.views[0]
+    const local = view.state.renderPosition()
+    const cam = view.scene.camera.position
+    return {
+      distance: Math.hypot(cam.x - local.x, cam.z - local.z),
+      height: cam.y,
+    }
+  })
+  check(
+    '카메라가 벽에 막히면 높이로 보상한다',
+    tight.distance > 2.5 || tight.height > 2.6,
+    JSON.stringify(tight),
+  )
   check('전투 중 예외 없음', combatErrors.length === 0, combatErrors.slice(0, 2).join(' | '))
   await combat.close()
 } finally {

@@ -18,13 +18,20 @@ import { CreateGround } from '@babylonjs/core/Meshes/Builders/groundBuilder'
 import { CreateCylinder } from '@babylonjs/core/Meshes/Builders/cylinderBuilder'
 import { CreateSphere } from '@babylonjs/core/Meshes/Builders/sphereBuilder'
 import { CreateTorus } from '@babylonjs/core/Meshes/Builders/torusBuilder'
-import type { Mesh } from '@babylonjs/core/Meshes/mesh'
+import { Mesh } from '@babylonjs/core/Meshes/mesh'
+import { VertexData } from '@babylonjs/core/Meshes/mesh.vertexData'
 import type { TransformNode } from '@babylonjs/core/Meshes/transformNode'
 // thinInstance* API 를 쓰려면 사이드이펙트 임포트가 필요하다.
 import '@babylonjs/core/Meshes/thinInstanceMesh'
 
 import { CELL, EYE_H, WALL_H, WALL_T } from '../shared/constants'
-import { ENEMY_DEFS, EnemyKind, type EnemyKindValue } from '../shared/combat'
+import {
+  ATTACK_HALF_ANGLE,
+  ATTACK_RANGE,
+  ENEMY_DEFS,
+  EnemyKind,
+  type EnemyKindValue,
+} from '../shared/combat'
 import { cellToWorld, collectAllWalls, type Maze } from '../shared/maze'
 import type { RenderEnemy, RenderKey, RenderPlayer, RenderProjectile } from '../game/client-state'
 
@@ -81,6 +88,9 @@ export class MazeScene {
   private projectiles = new Map<number, Mesh>()
   private enemyMaterials = new Map<string, StandardMaterial>()
   private projectileMaterial: StandardMaterial | null = null
+  private attackCone: Mesh | null = null
+  private attackConeMaterial: StandardMaterial | null = null
+  private attackConeAlpha = 0
   private torch: PointLight
   private wallMaterial: StandardMaterial
   private groundMaterial: StandardMaterial
@@ -363,6 +373,56 @@ export class MazeScene {
     }
   }
 
+  /**
+   * 공격 범위 표시. 캐릭터 앞 부채꼴을 바닥에 깔아준다.
+   *
+   * 평소에는 아주 흐리게 깔아둬서 "내 공격이 어디까지 닿는지" 를 익힐 수 있게 하고,
+   * 실제로 휘두르는 순간에만 밝게 번쩍인다. 판정과 똑같은 각도·거리로 그리므로
+   * 보이는 것과 맞는 것이 어긋나지 않는다.
+   */
+  setAttackRange(
+    x: number,
+    z: number,
+    yaw: number,
+    swinging: boolean,
+    visible: boolean,
+    dt: number,
+  ): void {
+    if (!this.attackCone) {
+      const material = new StandardMaterial('attackCone', this.scene)
+      material.emissiveColor = new Color3(0.55, 0.85, 1)
+      material.diffuseColor = new Color3(0, 0, 0)
+      material.specularColor = new Color3(0, 0, 0)
+      material.disableLighting = true
+      material.backFaceCulling = false
+      this.attackConeMaterial = material
+
+      this.attackCone = buildSectorMesh(this.scene, ATTACK_RANGE, ATTACK_HALF_ANGLE)
+      this.attackCone.material = material
+      this.attackCone.isPickable = false
+      // 바닥과 z-fighting 하지 않도록 살짝 띄운다.
+      this.attackCone.position.y = 0.08
+    }
+
+    const cone = this.attackCone
+    const material = this.attackConeMaterial!
+
+    if (!visible) {
+      cone.setEnabled(false)
+      this.attackConeAlpha = 0
+      return
+    }
+    cone.setEnabled(true)
+    cone.position.set(x, 0.08, z)
+    cone.rotation.y = yaw
+
+    // 휘두르면 확 밝아졌다가 서서히 원래의 흐린 상태로 돌아간다.
+    const target = swinging ? 0.5 : 0.08
+    const speed = swinging ? 1 : Math.min(1, dt * 5)
+    this.attackConeAlpha += (target - this.attackConeAlpha) * speed
+    material.alpha = this.attackConeAlpha
+  }
+
   /** 로컬 플레이어 위치에 손전등을 붙인다. 랜턴 아이템이 있으면 더 멀리 비춘다. */
   setTorch(x: number, z: number, range: number): void {
     this.torch.position.set(x, EYE_H + 0.3, z)
@@ -450,6 +510,33 @@ export class MazeScene {
 
     return { root, body, nose }
   }
+}
+
+/**
+ * 부채꼴 메시를 직접 만든다.
+ *
+ * CreateDisc 를 회전시켜 쓸 수도 있지만, 그러면 시작 각도와 회전 축을 맞추느라
+ * 방향이 헷갈린다. XZ 평면에 직접 부채꼴을 만들면 yaw 규약(0 = +Z)과 바로 맞아떨어진다.
+ */
+function buildSectorMesh(scene: Scene, radius: number, halfAngle: number): Mesh {
+  const segments = 24
+  const positions: number[] = [0, 0, 0]
+  const indices: number[] = []
+
+  for (let i = 0; i <= segments; i++) {
+    const angle = -halfAngle + (halfAngle * 2 * i) / segments
+    // yaw 0 이 +Z 를 보므로 방향 벡터는 (sin, cos) 이다.
+    positions.push(Math.sin(angle) * radius, 0, Math.cos(angle) * radius)
+    if (i > 0) indices.push(0, i, i + 1)
+  }
+
+  const mesh = new Mesh('attackCone', scene)
+  const data = new VertexData()
+  data.positions = positions
+  data.indices = indices
+  data.normals = positions.map((_, i) => (i % 3 === 1 ? 1 : 0))
+  data.applyToMesh(mesh)
+  return mesh
 }
 
 /** 벽면용 가로 줄무늬. 벽 길이에 따라 늘어나도 가로 방향이라 티가 나지 않는다. */

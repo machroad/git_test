@@ -47,6 +47,8 @@ export class GameView {
   private itemRows: { row: HTMLElement; button: HTMLButtonElement; itemId: number }[] = []
   private active = false
   private shopOpen = false
+  private attackWasHeld = false
+  private localSwingTimer = 0
 
   constructor(options: GameViewOptions) {
     this.label = options.label
@@ -113,6 +115,13 @@ export class GameView {
 
     const intent = this.input.moveIntent()
     const direction = this.camera.toWorldDirection(intent.forward, intent.strafe)
+
+    // 공격 이펙트는 호스트 응답을 기다리지 않고 누른 순간 보여준다.
+    // 왕복 지연만큼 늦게 번쩍이면 조작이 씹힌 것처럼 느껴진다.
+    const attackNow = this.input.attackHeld()
+    if (attackNow && !this.attackWasHeld) this.localSwingTimer = 0.18
+    this.attackWasHeld = attackNow
+    this.localSwingTimer = Math.max(0, this.localSwingTimer - dt)
     // 전송과 예측은 update() 안의 고정 스텝에서 함께 일어난다.
     this.state.setInput(
       direction.dx,
@@ -146,9 +155,23 @@ export class GameView {
     this.scene.syncProjectiles(this.state.renderProjectiles())
     this.scene.syncKeys(keys, this.state.exitOpen, dt)
     if (local) {
-      this.scene.setLocalBodyVisible(local.id, this.camera.mode === 'third' && !local.escaped)
       this.camera.update(this.scene, maze, local.x, local.z, dt)
+      // 카메라가 아주 가까워지면 캐릭터가 화면을 다 가린다. 그럴 땐 감춘다.
+      const tooClose = this.camera.distanceToPlayer() < 1.5
+      this.scene.setLocalBodyVisible(
+        local.id,
+        this.camera.mode === 'third' && !local.escaped && !tooClose,
+      )
       this.scene.setTorch(local.x, local.z, torchRangeFor(this.state.inventory))
+      // 공격 범위 표시. 로비에서는 싸울 일이 없으므로 감춘다.
+      this.scene.setAttackRange(
+        local.x,
+        local.z,
+        this.camera.yaw,
+        this.state.swinging || this.localSwingTimer > 0,
+        this.state.zone === 'dungeon' && !local.escaped && !this.state.downed,
+        dt,
+      )
     }
     this.scene.render()
 

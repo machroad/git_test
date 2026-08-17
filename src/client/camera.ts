@@ -5,7 +5,7 @@
  * 전환할 때마다 시점이 튀면 미로에서 방향 감각을 잃는다.
  */
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { EYE_H } from '../shared/constants'
+import { EYE_H, WALL_H } from '../shared/constants'
 import { segmentBlocked, type Maze } from '../shared/maze'
 import type { MazeScene } from './scene'
 
@@ -42,6 +42,15 @@ const THIRD_MIN_SCALE = 0.32
 const PULL_IN_TAU = 0.28
 const PUSH_OUT_TAU = 0.25
 
+/**
+ * 뒤가 막혀서 카메라가 당겨질 때 대신 위로 들어올리는 높이.
+ *
+ * 좁은 통로에서는 뒤로 뺄 공간이 아예 없다. 그럴 때 캐릭터 등에 딱 붙이는 대신
+ * 위로 올려 내려다보게 하면, 캐릭터도 보이고 앞 통로도 보인다.
+ * 벽 높이(WALL_H)보다 낮게 유지해야 벽 너머가 보이지 않는다.
+ */
+const TIGHT_LIFT = 2.4
+
 const MIN_PITCH = -0.9
 const MAX_PITCH = 1.1
 
@@ -51,6 +60,8 @@ export class CameraController {
   pitch = 0.25
   /** 벽 회피로 실제 적용 중인 오프셋 배율. 시간에 따라 목표값을 따라간다. */
   private distanceScale = 1
+  /** 마지막으로 적용한 카메라-캐릭터 평면 거리. 캐릭터를 감출지 판단하는 데 쓴다. */
+  private planarDistance = THIRD_DISTANCE
   /**
    * 계측용. scripts/camera-probe.mjs 가 회전 시 부드러움과 벽 뚫림을 재는 데 쓴다.
    * 이 값들 덕분에 THIRD_DISTANCE / PULL_IN_TAU 를 감이 아니라 숫자로 정할 수 있었다.
@@ -110,18 +121,30 @@ export class CameraController {
     const offsetLength = Math.hypot(offsetX, offsetZ)
     this.debugOvershoot = Math.max(0, (scale - target) * offsetLength)
 
-    camera.position.set(
-      playerX + offsetX * scale,
-      THIRD_PIVOT_H + offsetY * scale,
-      playerZ + offsetZ * scale,
-    )
+    // 뒤가 막혀 당겨진 만큼 위로 올린다. 벽 높이는 넘지 않는다.
+    const tightness = Math.max(0, 1 - scale)
+    const lift = Math.min(TIGHT_LIFT * tightness, WALL_H - THIRD_PIVOT_H - 0.6)
+
+    const camX = playerX + offsetX * scale
+    const camZ = playerZ + offsetZ * scale
+    this.planarDistance = Math.hypot(camX - playerX, camZ - playerZ)
+
+    camera.position.set(camX, THIRD_PIVOT_H + offsetY * scale + lift, camZ)
+
+    // 많이 들어올렸을 때는 시선도 캐릭터 쪽으로 당겨야 내려다보는 그림이 된다.
+    const lookAhead = THIRD_LOOK_AHEAD * (1 - tightness * 0.7)
     camera.setTarget(
       new Vector3(
-        playerX + sinYaw * THIRD_LOOK_AHEAD,
-        EYE_H - Math.sin(this.pitch) * THIRD_LOOK_AHEAD,
-        playerZ + cosYaw * THIRD_LOOK_AHEAD,
+        playerX + sinYaw * lookAhead,
+        EYE_H - Math.sin(this.pitch) * lookAhead,
+        playerZ + cosYaw * lookAhead,
       ),
     )
+  }
+
+  /** 카메라가 캐릭터에서 얼마나 떨어져 있는지(평면 거리). */
+  distanceToPlayer(): number {
+    return this.mode === 'first' ? 0 : this.planarDistance
   }
 
   /**

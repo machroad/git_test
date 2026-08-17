@@ -95,6 +95,8 @@ export class GameClientState {
   staminaRatio = 1
   stunned = false
   downed = false
+  /** 지금 공격 모션 중인지. 호스트가 알려준다. */
+  swinging = false
   /** 예측이 호스트와 같은 속도를 쓰기 위한 스태미나 근사치(0~255). */
   private stamina = 255
 
@@ -218,6 +220,7 @@ export class GameClientState {
       this.stamina = mine.stamina
       this.stunned = mine.stunned
       this.downed = mine.downed
+      this.swinging = mine.swinging
       this.reconcile(mine.x, mine.z, mine.lastInputTick)
     }
   }
