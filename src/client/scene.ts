@@ -32,7 +32,7 @@ import {
   EnemyKind,
   type EnemyKindValue,
 } from '../shared/combat'
-import { cellToWorld, collectAllWalls, type Maze } from '../shared/maze'
+import { cellToWorld, collectAllWalls, type Aabb, type Maze } from '../shared/maze'
 import type { RenderEnemy, RenderKey, RenderPlayer, RenderProjectile } from '../game/client-state'
 
 /** 플레이어 색. id 순서대로 배정된다. */
@@ -76,6 +76,14 @@ export class MazeScene {
   readonly camera: UniversalCamera
 
   private wallMesh: Mesh | null = null
+  /** 가려서 투명하게 그릴 벽만 담는 별도 메시. */
+  private wallGhostMesh: Mesh | null = null
+  private wallGhostMaterial: StandardMaterial | null = null
+  /** 벽 AABB 목록과 원래 행렬. 인덱스가 thin instance 순서와 일치한다. */
+  private wallBoxes: Aabb[] = []
+  private wallMatrices: Matrix[] = []
+  /** 지금 투명하게 처리 중인 벽 인덱스. 바뀔 때만 버퍼를 갱신한다. */
+  private occluding = new Set<number>()
   private ground: Mesh | null = null
   private exitMesh: Mesh | null = null
   private exitMaterial: StandardMaterial
@@ -182,6 +190,8 @@ export class MazeScene {
     base.isPickable = false
 
     const matrices = new Float32Array(walls.length * 16)
+    this.wallBoxes = walls
+    this.wallMatrices = []
     for (let i = 0; i < walls.length; i++) {
       const w = walls[i]
       const sx = Math.max(w.maxX - w.minX, WALL_T)
@@ -192,10 +202,32 @@ export class MazeScene {
         Matrix.Translation(cx, WALL_H / 2, cz),
       )
       matrix.copyToArray(matrices, i * 16)
+      this.wallMatrices.push(matrix)
     }
-    base.thinInstanceSetBuffer('matrix', matrices, 16, true)
+    // 매 프레임 일부 인스턴스를 갈아끼우므로 정적 버퍼로 두면 안 된다.
+    base.thinInstanceSetBuffer('matrix', matrices, 16, false)
     base.freezeWorldMatrix()
     this.wallMesh = base
+    this.occluding.clear()
+
+    // 가림 처리용 반투명 사본. 실제로 가리는 벽만 여기로 옮겨 그린다.
+    this.wallGhostMesh?.dispose()
+    if (!this.wallGhostMaterial) {
+      const ghost = new StandardMaterial('wallGhost', this.scene)
+      ghost.diffuseColor = new Color3(0.5, 0.56, 0.72)
+      ghost.emissiveColor = new Color3(0.12, 0.14, 0.2)
+      ghost.specularColor = new Color3(0, 0, 0)
+      ghost.alpha = 0.18
+      ghost.backFaceCulling = false
+      // 반투명 벽 때문에 뒤쪽 물체가 가려지면 안 된다.
+      ghost.disableDepthWrite = true
+      this.wallGhostMaterial = ghost
+    }
+    const ghostMesh = CreateBox('wallGhost', { size: 1 }, this.scene)
+    ghostMesh.material = this.wallGhostMaterial
+    ghostMesh.isPickable = false
+    ghostMesh.thinInstanceSetBuffer('matrix', new Float32Array(0), 16, false)
+    this.wallGhostMesh = ghostMesh
 
     // 탈출구
     const exitPos = cellToWorld(maze.exit)
@@ -423,6 +455,76 @@ export class MazeScene {
     material.alpha = this.attackConeAlpha
   }
 
+  /**
+   * 카메라와 캐릭터 사이를 가로막는 벽을 반투명하게 바꾼다.
+   *
+   * 이게 없으면 카메라가 벽을 피해 계속 앞뒤로 움직여야 하고, 그 움직임 자체가
+   * 어색하다. 벽을 비워주면 카메라를 고정할 수 있다.
+   *
+   * 가리는 벽은 보통 0~3개다. 집합이 바뀔 때만 버퍼를 갱신해서, 가만히 있을 때는
+   * 아무 일도 하지 않는다.
+   */
+  updateWallOcclusion(camX: number, camZ: number, playerX: number, playerZ: number): void {
+    const wall = this.wallMesh
+    const ghost = this.wallGhostMesh
+    if (!wall || !ghost) return
+
+    const hit = new Set<number>()
+    // 선분의 경계 상자로 먼저 걸러낸다. 대부분의 벽은 여기서 탈락한다.
+    const minX = Math.min(camX, playerX) - OCCLUSION_PAD
+    const maxX = Math.max(camX, playerX) + OCCLUSION_PAD
+    const minZ = Math.min(camZ, playerZ) - OCCLUSION_PAD
+    const maxZ = Math.max(camZ, playerZ) + OCCLUSION_PAD
+
+    for (let i = 0; i < this.wallBoxes.length; i++) {
+      const box = this.wallBoxes[i]
+      if (box.maxX < minX || box.minX > maxX || box.maxZ < minZ || box.minZ > maxZ) continue
+      if (segmentHitsBox(camX, camZ, playerX, playerZ, box, OCCLUSION_PAD)) hit.add(i)
+    }
+
+    if (sameSet(hit, this.occluding)) return
+
+    // 이전에 숨겼다가 이제 안 가리는 벽은 되돌린다.
+    for (const index of this.occluding) {
+      if (!hit.has(index)) wall.thinInstanceSetMatrixAt(index, this.wallMatrices[index], false)
+    }
+    // 새로 가리는 벽은 크기를 0으로 만들어 사실상 지운다.
+    for (const index of hit) {
+      if (!this.occluding.has(index)) wall.thinInstanceSetMatrixAt(index, ZERO_MATRIX, false)
+    }
+    wall.thinInstanceBufferUpdated('matrix')
+
+    // 지운 자리에 반투명 사본을 놓는다.
+    const ghostData = new Float32Array(hit.size * 16)
+    let slot = 0
+    for (const index of hit) {
+      this.wallMatrices[index].copyToArray(ghostData, slot * 16)
+      slot++
+    }
+    ghost.thinInstanceSetBuffer('matrix', ghostData, 16, false)
+
+    this.occluding = hit
+  }
+
+  /**
+   * 가림 처리를 전부 되돌린다.
+   *
+   * 1인칭에서는 카메라와 캐릭터가 같은 자리라 가릴 것이 없다. 그런데도 길이 0인
+   * 선분으로 판정하면, 벽에 붙어 선 순간 그 벽이 여유 반경에 걸려 사라져 버린다.
+   */
+  clearWallOcclusion(): void {
+    const wall = this.wallMesh
+    const ghost = this.wallGhostMesh
+    if (!wall || !ghost || this.occluding.size === 0) return
+
+    for (const index of this.occluding) {
+      wall.thinInstanceSetMatrixAt(index, this.wallMatrices[index], false)
+    }
+    wall.thinInstanceBufferUpdated('matrix')
+    ghost.thinInstanceSetBuffer('matrix', new Float32Array(0), 16, false)
+    this.occluding.clear()
+  }
+
   /** 로컬 플레이어 위치에 손전등을 붙인다. 랜턴 아이템이 있으면 더 멀리 비춘다. */
   setTorch(x: number, z: number, range: number): void {
     this.torch.position.set(x, EYE_H + 0.3, z)
@@ -510,6 +612,55 @@ export class MazeScene {
 
     return { root, body, nose }
   }
+}
+
+/** 가림 판정에 쓰는 여유. 살짝 스치는 벽도 비워야 화면 가장자리에서 깜빡이지 않는다. */
+const OCCLUSION_PAD = 0.6
+const ZERO_MATRIX = Matrix.Scaling(0, 0, 0)
+
+/** 두 집합이 같은지. 가리는 벽이 그대로면 버퍼를 건드리지 않는다. */
+function sameSet(a: Set<number>, b: Set<number>): boolean {
+  if (a.size !== b.size) return false
+  for (const value of a) if (!b.has(value)) return false
+  return true
+}
+
+/**
+ * 선분이 AABB 를 지나는지 (XZ 평면, 슬랩 방식).
+ * 벽은 바닥부터 천장까지 꽉 차 있어서 높이는 볼 필요가 없다.
+ */
+function segmentHitsBox(
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  box: Aabb,
+  pad: number,
+): boolean {
+  const dx = x1 - x0
+  const dz = z1 - z0
+  let tmin = 0
+  let tmax = 1
+
+  const axes: [number, number, number, number][] = [
+    [x0, dx, box.minX - pad, box.maxX + pad],
+    [z0, dz, box.minZ - pad, box.maxZ + pad],
+  ]
+
+  for (const [origin, delta, lo, hi] of axes) {
+    if (Math.abs(delta) < 1e-6) {
+      // 그 축으로 움직이지 않으면 시작점이 구간 안에 있어야 한다.
+      if (origin < lo || origin > hi) return false
+      continue
+    }
+    let t1 = (lo - origin) / delta
+    let t2 = (hi - origin) / delta
+    if (t1 > t2) [t1, t2] = [t2, t1]
+    tmin = Math.max(tmin, t1)
+    tmax = Math.min(tmax, t2)
+    if (tmin > tmax) return false
+  }
+  return true
 }
 
 /**

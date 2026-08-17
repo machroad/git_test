@@ -5,8 +5,8 @@
  * 전환할 때마다 시점이 튀면 미로에서 방향 감각을 잃는다.
  */
 import { Vector3 } from '@babylonjs/core/Maths/math.vector'
-import { EYE_H, WALL_H } from '../shared/constants'
-import { segmentBlocked, type Maze } from '../shared/maze'
+import { CELL, EYE_H } from '../shared/constants'
+import type { Maze } from '../shared/maze'
 import type { MazeScene } from './scene'
 
 export type ViewMode = 'first' | 'third'
@@ -24,32 +24,14 @@ const THIRD_SHOULDER = 0.95
 const THIRD_PIVOT_H = EYE_H + 0.45
 /** 시선을 캐릭터보다 이만큼 앞에 둬서 캐릭터를 화면 중앙에서 비켜나게 한다. */
 const THIRD_LOOK_AHEAD = 2.2
-/** 벽에 막혔을 때 오프셋을 이 비율까지 줄인다. 더 줄이면 1인칭과 다를 게 없다. */
-const THIRD_MIN_SCALE = 0.32
-
 /**
- * 벽 회피 거리를 시간에 따라 부드럽게 따라간다.
+ * 카메라는 벽을 피하지 않는다. 대신 가리는 벽을 반투명하게 만든다.
  *
- * 좁은 통로에서 제자리 회전하면 카메라가 옆벽을 훑고 지나가므로, 실제 여유 거리는
- * 회전 각도에 따라 급격히 변한다. 그 값을 그대로 쓰면 화면이 뚝뚝 끊긴다.
- *
- * 당길 때는 빠르게(느리면 벽을 뚫고 보인다), 놓을 때는 천천히(빠르면 튕겨 나온다).
- *
- * 벽이 두꺼워진 뒤로는 당기는 속도를 늦출 여유가 생겼다. 잠깐 넘어가봐야
- * 벽 "안"에 머무를 뿐 반대편이 비쳐 보이지 않기 때문이다 (넘어가는 깊이 2.2 < 두께 4).
- * scripts/camera-probe.mjs 로 재서 튀는 구간이 0회가 되는 값으로 잡았다.
+ * 벽을 피하게 하면 좁은 통로에서 거리가 쉴 새 없이 변하고, 그 움직임 자체가 어색하다.
+ * 통로 폭이 4인데 카메라를 3.4 뒤에 두려니 애초에 피할 공간이 없다.
+ * 가리는 쪽을 비워주면 카메라를 고정할 수 있고, 화면이 안정된다.
+ * (가림 처리는 MazeScene.updateWallOcclusion 에 있다.)
  */
-const PULL_IN_TAU = 0.28
-const PUSH_OUT_TAU = 0.25
-
-/**
- * 뒤가 막혀서 카메라가 당겨질 때 대신 위로 들어올리는 높이.
- *
- * 좁은 통로에서는 뒤로 뺄 공간이 아예 없다. 그럴 때 캐릭터 등에 딱 붙이는 대신
- * 위로 올려 내려다보게 하면, 캐릭터도 보이고 앞 통로도 보인다.
- * 벽 높이(WALL_H)보다 낮게 유지해야 벽 너머가 보이지 않는다.
- */
-const TIGHT_LIFT = 2.4
 
 const MIN_PITCH = -0.9
 const MAX_PITCH = 1.1
@@ -58,14 +40,9 @@ export class CameraController {
   mode: ViewMode = 'third'
   yaw = 0
   pitch = 0.25
-  /** 벽 회피로 실제 적용 중인 오프셋 배율. 시간에 따라 목표값을 따라간다. */
-  private distanceScale = 1
-  /** 마지막으로 적용한 카메라-캐릭터 평면 거리. 캐릭터를 감출지 판단하는 데 쓴다. */
+  /** 마지막으로 적용한 카메라-캐릭터 평면 거리. 계측과 캐릭터 표시 판단에 쓴다. */
   private planarDistance = THIRD_DISTANCE
-  /**
-   * 계측용. scripts/camera-probe.mjs 가 회전 시 부드러움과 벽 뚫림을 재는 데 쓴다.
-   * 이 값들 덕분에 THIRD_DISTANCE / PULL_IN_TAU 를 감이 아니라 숫자로 정할 수 있었다.
-   */
+  /** 계측용. scripts/camera-probe.mjs 가 회전 시 거리 변화를 재는 데 쓴다. */
   debugScale = 1
   debugOvershoot = 0
 
@@ -95,12 +72,15 @@ export class CameraController {
     return { dx, dz }
   }
 
-  update(view: MazeScene, maze: Maze, playerX: number, playerZ: number, dt: number): void {
+  update(view: MazeScene, maze: Maze, playerX: number, playerZ: number, _dt: number): void {
     const camera = view.camera
 
     if (this.mode === 'first') {
       camera.position.set(playerX, EYE_H, playerZ)
       camera.rotation.set(this.pitch, this.yaw, 0)
+      this.planarDistance = 0
+      // 1인칭은 시점이 캐릭터 안이라 가릴 벽이 없다.
+      view.clearWallOcclusion()
       return
     }
 
@@ -108,77 +88,37 @@ export class CameraController {
     const cosYaw = Math.cos(this.yaw)
     const cosPitch = Math.cos(this.pitch)
 
-    // 뒤쪽 + 오른쪽 어깨 방향으로 합성한 오프셋.
+    // 뒤쪽 + 오른쪽 어깨 방향으로 합성한 고정 오프셋.
     const offsetX = -sinYaw * THIRD_DISTANCE * cosPitch + cosYaw * THIRD_SHOULDER
     const offsetZ = -cosYaw * THIRD_DISTANCE * cosPitch - sinYaw * THIRD_SHOULDER
     const offsetY = Math.sin(this.pitch) * THIRD_DISTANCE
 
-    const target = this.clampOffset(maze, playerX, playerZ, offsetX, offsetZ)
-    const tau = target < this.distanceScale ? PULL_IN_TAU : PUSH_OUT_TAU
-    this.distanceScale += (target - this.distanceScale) * (1 - Math.exp(-dt / tau))
-    const scale = this.distanceScale
-    this.debugScale = scale
-    const offsetLength = Math.hypot(offsetX, offsetZ)
-    this.debugOvershoot = Math.max(0, (scale - target) * offsetLength)
-
-    // 뒤가 막혀 당겨진 만큼 위로 올린다. 벽 높이는 넘지 않는다.
-    const tightness = Math.max(0, 1 - scale)
-    const lift = Math.min(TIGHT_LIFT * tightness, WALL_H - THIRD_PIVOT_H - 0.6)
-
-    const camX = playerX + offsetX * scale
-    const camZ = playerZ + offsetZ * scale
+    // 미로 바깥으로는 나가지 않게 막는다. 밖으로 나가면 아무것도 없는 공간이 보인다.
+    const margin = 0.4
+    const camX = clamp(playerX + offsetX, margin, maze.w * CELL - margin)
+    const camZ = clamp(playerZ + offsetZ, margin, maze.h * CELL - margin)
     this.planarDistance = Math.hypot(camX - playerX, camZ - playerZ)
+    this.debugScale = 1
+    this.debugOvershoot = 0
 
-    camera.position.set(camX, THIRD_PIVOT_H + offsetY * scale + lift, camZ)
-
-    // 많이 들어올렸을 때는 시선도 캐릭터 쪽으로 당겨야 내려다보는 그림이 된다.
-    const lookAhead = THIRD_LOOK_AHEAD * (1 - tightness * 0.7)
+    camera.position.set(camX, THIRD_PIVOT_H + offsetY, camZ)
     camera.setTarget(
       new Vector3(
-        playerX + sinYaw * lookAhead,
-        EYE_H - Math.sin(this.pitch) * lookAhead,
-        playerZ + cosYaw * lookAhead,
+        playerX + sinYaw * THIRD_LOOK_AHEAD,
+        EYE_H - Math.sin(this.pitch) * THIRD_LOOK_AHEAD,
+        playerZ + cosYaw * THIRD_LOOK_AHEAD,
       ),
     )
+
+    view.updateWallOcclusion(camX, camZ, playerX, playerZ)
   }
 
   /** 카메라가 캐릭터에서 얼마나 떨어져 있는지(평면 거리). */
   distanceToPlayer(): number {
     return this.mode === 'first' ? 0 : this.planarDistance
   }
+}
 
-  /**
-   * 카메라가 벽을 뚫고 나가지 않도록 오프셋을 줄인다. 0~1 배율을 돌려준다.
-   *
-   * 물리 레이캐스트 대신 미로 격자를 직접 훑는다. 메시에 의존하지 않아 더 싸고,
-   * 보이는 벽과 판정이 항상 일치한다.
-   */
-  private clampOffset(maze: Maze, x: number, z: number, offsetX: number, offsetZ: number): number {
-    const blocked = (scale: number) =>
-      segmentBlocked(maze, x, z, x + offsetX * scale, z + offsetZ * scale)
-
-    if (!blocked(1)) return 1
-
-    // 성긴 격자로 훑기만 하면 결과가 몇 개의 이산값으로 뭉쳐서, 회전할 때
-    // 카메라 거리가 계단처럼 튄다. 대략의 구간을 찾은 뒤 이분 탐색으로 다듬어
-    // 연속적인 값을 낸다.
-    let low = THIRD_MIN_SCALE // 막혀 있다고 보는 쪽
-    let high = 1 // 뚫려 있는지 확인해야 하는 쪽
-    const coarse = 5
-    for (let i = coarse - 1; i >= 1; i--) {
-      const scale = THIRD_MIN_SCALE + ((1 - THIRD_MIN_SCALE) * i) / coarse
-      if (!blocked(scale)) {
-        low = scale
-        break
-      }
-      high = scale
-    }
-
-    for (let i = 0; i < 6; i++) {
-      const mid = (low + high) / 2
-      if (blocked(mid)) high = mid
-      else low = mid
-    }
-    return low
-  }
+function clamp(value: number, lo: number, hi: number): number {
+  return value < lo ? lo : value > hi ? hi : value
 }

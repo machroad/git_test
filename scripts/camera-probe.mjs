@@ -7,9 +7,11 @@
  *
  *   npx tsx scripts/camera-probe.mjs
  *
- * 이 수치로 THIRD_DISTANCE 와 PULL_IN_TAU 를 정했다.
  * 처음에는 거리가 6개 이산값으로만 변해서 한 프레임에 1.43 단위씩 튀었고,
- * 그게 "화면이 뚝뚝 끊긴다"의 정체였다.
+ * 그게 "화면이 뚝뚝 끊긴다"의 정체였다. 이분 탐색 + 시간 기준 스무딩으로 줄였지만,
+ * 좁은 통로에서는 거리가 계속 변하는 것 자체가 어색해서 결국 벽 회피를 없앴다.
+ * 지금은 카메라가 고정이고 가리는 벽을 반투명하게 만든다.
+ * 그래서 이 스크립트의 기대값도 "거리가 변하지 않는다" 로 바뀌었다.
  */
 
 import { WALL_T } from '../src/shared/constants.ts'
@@ -31,6 +33,8 @@ const fake = {
     rotation: { set() {} },
     setTarget() {},
   },
+  // 가림 처리는 렌더러 쪽 일이라 여기서는 아무것도 하지 않는다.
+  updateWallOcclusion() {},
 }
 
 const dists = []
@@ -63,5 +67,11 @@ console.log(`  최대 점프 폭 : ${maxJump.toFixed(2)} 단위`)
 const maxOver = Math.max(...overshoot)
 const overFrames = overshoot.filter((o) => o > 0.02).length
 // 넘어간 깊이가 벽 두께보다 작으면 벽 "안"에 머무는 것이라 반대편이 비쳐 보이지 않는다.
-console.log(`  벽 안쪽으로 넘어간 최대 깊이 : ${maxOver.toFixed(2)} 단위 (벽 두께 ${WALL_T})`)
-console.log(`  넘어가 있던 프레임 : ${overFrames}/${STEPS}`)
+void maxOver
+void overFrames
+void WALL_T
+console.log(
+  dists.every((d) => Math.abs(d - dists[0]) < 0.01)
+    ? '  → 거리가 일정하다. 벽 회피 대신 가림 처리를 쓰고 있다는 뜻이다.'
+    : '  → 거리가 변한다. 벽 회피가 다시 켜졌는지 확인할 것.',
+)

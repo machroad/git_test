@@ -726,21 +726,60 @@ try {
   await combat.screenshot({ path: join(SHOTS, '11-combat.png') })
   await combat.keyboard.up('Space')
 
-  // 좁은 통로에서 카메라가 캐릭터 등에 붙는 대신 위로 올라가는지
-  const tight = await combat.evaluate(() => {
-    const view = window.__game.views[0]
-    const local = view.state.renderPosition()
-    const cam = view.scene.camera.position
-    return {
-      distance: Math.hypot(cam.x - local.x, cam.z - local.z),
-      height: cam.y,
-    }
-  })
-  check(
-    '카메라가 벽에 막히면 높이로 보상한다',
-    tight.distance > 2.5 || tight.height > 2.6,
-    JSON.stringify(tight),
+  // 카메라는 이제 벽을 피하지 않는다. 거리가 일정해야 한다.
+  const distances = await combat.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const samples = []
+        const view = window.__game.views[0]
+        let steps = 0
+        const tick = () => {
+          view.camera.rotate(0.35, 0)
+          const local = view.state.renderPosition()
+          const cam = view.scene.camera.position
+          samples.push(Math.hypot(cam.x - local.x, cam.z - local.z))
+          if (++steps >= 18) resolve(samples)
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
   )
+  const spread = Math.max(...distances) - Math.min(...distances)
+  check(
+    '회전해도 3인칭 카메라 거리가 변하지 않는다',
+    spread < 0.05,
+    `(편차 ${spread.toFixed(3)}, 거리 ${distances[0].toFixed(2)})`,
+  )
+
+  // 대신 가리는 벽이 반투명 사본으로 옮겨져야 한다.
+  const ghost = await combat.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const view = window.__game.views[0]
+        let seenOccluder = 0
+        let steps = 0
+        const tick = () => {
+          view.camera.rotate(0.35, 0)
+          const mesh = view.scene.scene.getMeshByName('wallGhost')
+          seenOccluder = Math.max(seenOccluder, mesh ? mesh.thinInstanceCount : 0)
+          if (++steps >= 18) resolve({ seenOccluder, exists: !!mesh })
+          else requestAnimationFrame(tick)
+        }
+        requestAnimationFrame(tick)
+      }),
+  )
+  check('가리는 벽이 반투명 사본으로 옮겨진다', ghost.exists && ghost.seenOccluder > 0,
+    JSON.stringify(ghost))
+
+  // 1인칭에서는 가릴 것이 없다.
+  await combat.evaluate(() => window.__game.views[0].setMode('first'))
+  await combat.waitForTimeout(600)
+  const firstPersonGhost = await combat.evaluate(() => {
+    const mesh = window.__game.views[0].scene.scene.getMeshByName('wallGhost')
+    return mesh ? mesh.thinInstanceCount : -1
+  })
+  check('1인칭에서는 투명 처리된 벽이 없다', firstPersonGhost === 0, `(${firstPersonGhost})`)
+  await combat.evaluate(() => window.__game.views[0].setMode('third'))
   check('전투 중 예외 없음', combatErrors.length === 0, combatErrors.slice(0, 2).join(' | '))
   await combat.close()
 } finally {
