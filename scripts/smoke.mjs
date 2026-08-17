@@ -59,9 +59,10 @@ async function enterDungeon(page) {
   await page.evaluate(() => {
     const host = window.__game.host()
     const entrance = host.state.entranceCell
+    const cell = window.__game.cell
     for (const player of host.state.players.values()) {
-      player.x = (entrance.x + 0.5) * 4
-      player.z = (entrance.y + 0.5) * 4
+      player.x = (entrance.x + 0.5) * cell
+      player.z = (entrance.y + 0.5) * cell
     }
   })
   await page.waitForTimeout(250)
@@ -215,8 +216,21 @@ try {
   await page.screenshot({ path: join(SHOTS, '01-first-person.png') })
 
   await page.evaluate(() => window.__game.views[0].setMode('third'))
-  await page.waitForTimeout(400)
+  // 카메라 벽 회피가 시간 기준으로 밀려나므로 안정화될 시간을 준다.
+  // 이 컨테이너는 몇 fps 밖에 안 나와서 400ms 로는 몇 프레임 돌지 않는다.
+  await page.waitForTimeout(2500)
   check('3인칭 전환', await page.evaluate(() => window.__game.views[0].camera.mode === 'third'))
+  const camDistance = await page.evaluate(() => {
+    const view = window.__game.views[0]
+    const local = view.state.renderPosition()
+    const cam = view.scene.camera.position
+    return Math.hypot(cam.x - local.x, cam.z - local.z)
+  })
+  check(
+    '트인 곳에서는 3인칭 카메라가 캐릭터에서 떨어진다',
+    camDistance > 1.8,
+    `(거리 ${camDistance.toFixed(2)})`,
+  )
   await page.screenshot({ path: join(SHOTS, '02-third-person.png') })
 
   // 미니맵이 실제로 그려졌는지
@@ -517,8 +531,8 @@ try {
     const host = window.__game.host()
     const shop = host.state.shopCell
     const player = host.state.players.get(1)
-    player.x = (shop.x + 0.5) * 4
-    player.z = (shop.y + 0.5) * 4
+    player.x = (shop.x + 0.5) * window.__game.cell
+    player.z = (shop.y + 0.5) * window.__game.cell
   })
   await setup.waitForFunction(
     () => document.querySelector('.shop')?.classList.contains('is-open') === true,
@@ -547,8 +561,8 @@ try {
     const host = window.__game.host()
     const entrance = host.state.entranceCell
     const player = host.state.players.get(1)
-    player.x = (entrance.x + 0.5) * 4
-    player.z = (entrance.y + 0.5) * 4
+    player.x = (entrance.x + 0.5) * window.__game.cell
+    player.z = (entrance.y + 0.5) * window.__game.cell
   })
   await setup.waitForTimeout(300)
   await setup.keyboard.down('f')
@@ -582,6 +596,108 @@ try {
 
   check('설정 → 로비 → 던전 흐름에서 예외 없음', setupErrors.length === 0, setupErrors.slice(0, 2).join(' | '))
   await setup.close()
+  console.log('\n[7] 두꺼운 벽 · 스탯 · 전투')
+  const combat = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  const combatErrors = []
+  combat.on('pageerror', (error) => combatErrors.push(String(error)))
+  await combat.goto(`http://localhost:${PORT}/?views=1&skipSetup=1`, { waitUntil: 'load' })
+  await combat.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, {
+    timeout: 20000,
+  })
+  await enterDungeon(combat)
+
+  const world = await combat.evaluate(() => {
+    const host = window.__game.host()
+    return {
+      enemies: host.state.enemies.length,
+      bosses: host.state.enemies.filter((e) => e.kind === 3).length,
+      rooms: host.state.maze.rooms.length,
+      hp: host.state.players.get(1).hp,
+      stamina: host.state.players.get(1).stamina,
+    }
+  })
+  check('던전에 적이 배치된다', world.enemies > 0, JSON.stringify(world))
+  check('방마다 보스가 하나씩', world.bosses === world.rooms, JSON.stringify(world))
+  check('체력 · 스태미나 게이지가 HUD 에 있다',
+    (await combat.locator('.bar--hp .bar__fill').count()) === 1 &&
+      (await combat.locator('.bar--stamina .bar__fill').count()) === 1)
+
+  // 달리면 스태미나가 줄어야 한다.
+  await combat.keyboard.down('Shift')
+  await combat.keyboard.down('w')
+  await combat.waitForFunction(
+    () => window.__game.host().state.players.get(1).stamina < 100,
+    null,
+    { timeout: 20000 },
+  )
+  check('Shift 로 달리면 스태미나가 줄어든다', true)
+
+  // 계속 달리면 결국 경직에 걸린다.
+  const exhausted = await combat
+    .waitForFunction(() => window.__game.host().state.players.get(1).stunTimer > 0, null, {
+      timeout: 30000,
+    })
+    .then(() => true)
+    .catch(() => false)
+  await combat.keyboard.up('w')
+  await combat.keyboard.up('Shift')
+  check('스태미나가 바닥나면 경직에 걸린다', exhausted)
+
+  const stunUi = await combat.evaluate(() => ({
+    hint: document.querySelector('.hud__center')?.textContent ?? '',
+    exhaustedClass:
+      document.querySelector('.bar--stamina .bar__fill')?.classList.contains('is-exhausted') ?? false,
+  }))
+  check('경직 상태가 화면에 표시된다', stunUi.hint.includes('지쳤다') || stunUi.exhaustedClass,
+    JSON.stringify(stunUi))
+
+  // 경직이 풀릴 때까지 기다렸다가 공격
+  await combat.waitForFunction(
+    () => window.__game.host().state.players.get(1).stunTimer <= 0,
+    null,
+    { timeout: 20000 },
+  )
+  await combat.evaluate(() => {
+    // 눈앞에 적을 하나 세워 놓고 때린다.
+    const host = window.__game.host()
+    const player = host.state.players.get(1)
+    player.stamina = 100
+    player.yaw = 0
+    host.state.enemies = [
+      {
+        id: 900,
+        kind: 0,
+        x: player.x,
+        z: player.z + 2,
+        yaw: 0,
+        hp: 40,
+        windup: 0,
+        cooldown: 999,
+        target: -1,
+        hitFlash: 0,
+      },
+    ]
+  })
+  await combat.waitForTimeout(400)
+  const hpBefore = await combat.evaluate(() => window.__game.host().state.enemies[0]?.hp ?? -1)
+  await combat.keyboard.down('Space')
+  const damaged = await combat
+    .waitForFunction(
+      (before) => {
+        const enemy = window.__game.host().state.enemies[0]
+        return !enemy || enemy.hp < before
+      },
+      hpBefore,
+      { timeout: 20000 },
+    )
+    .then(() => true)
+    .catch(() => false)
+  await combat.keyboard.up('Space')
+  check('Space 로 앞의 적을 때린다', damaged, `(피격 전 ${hpBefore})`)
+
+  await combat.screenshot({ path: join(SHOTS, '11-combat.png') })
+  check('전투 중 예외 없음', combatErrors.length === 0, combatErrors.slice(0, 2).join(' | '))
+  await combat.close()
 } finally {
   await browser.close()
   server.close()

@@ -12,14 +12,14 @@ import type { MazeScene } from './scene'
 export type ViewMode = 'first' | 'third'
 
 /**
- * 통로 폭이 CELL - WALL_T = 3.6 밖에 안 된다. 정통 3인칭처럼 캐릭터 정후방
+ * 통로 폭이 CELL - WALL_T = 4 밖에 안 된다. 정통 3인칭처럼 캐릭터 정후방
  * 멀리에 카메라를 두면 거의 항상 뒤쪽 벽에 박혀서, 화면이 캐릭터 등판으로 꽉 찬다.
  *
  * 그래서 어깨너머(over-the-shoulder) 방식을 쓴다. 카메라를 옆으로 살짝 밀고
  * 시선을 캐릭터보다 앞에 두면, 캐릭터는 화면 한쪽에 작게 남고 통로가 보인다.
  * 좁은 실내에서 3인칭을 성립시키는 일반적인 해법이다.
  */
-const THIRD_DISTANCE = 3.2
+const THIRD_DISTANCE = 3.4
 const THIRD_SHOULDER = 0.95
 const THIRD_PIVOT_H = EYE_H + 0.45
 /** 시선을 캐릭터보다 이만큼 앞에 둬서 캐릭터를 화면 중앙에서 비켜나게 한다. */
@@ -34,8 +34,12 @@ const THIRD_MIN_SCALE = 0.32
  * 회전 각도에 따라 급격히 변한다. 그 값을 그대로 쓰면 화면이 뚝뚝 끊긴다.
  *
  * 당길 때는 빠르게(느리면 벽을 뚫고 보인다), 놓을 때는 천천히(빠르면 튕겨 나온다).
+ *
+ * 벽이 두꺼워진 뒤로는 당기는 속도를 늦출 여유가 생겼다. 잠깐 넘어가봐야
+ * 벽 "안"에 머무를 뿐 반대편이 비쳐 보이지 않기 때문이다 (넘어가는 깊이 2.2 < 두께 4).
+ * scripts/camera-probe.mjs 로 재서 튀는 구간이 0회가 되는 값으로 잡았다.
  */
-const PULL_IN_TAU = 0.12
+const PULL_IN_TAU = 0.28
 const PUSH_OUT_TAU = 0.25
 
 const MIN_PITCH = -0.9

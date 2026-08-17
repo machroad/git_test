@@ -20,25 +20,35 @@ export const TICK_DT = 1 / TICK_HZ
  * 더 자주 보내봐야 대역폭만 쓴다.
  */
 
-/** 미로 한 칸의 월드 크기(단위). */
-export const CELL = 4
-/** 벽 두께. */
-export const WALL_T = 0.4
-/** 벽 높이. */
-export const WALL_H = 3.2
+/**
+ * 미로 한 칸의 월드 크기(단위)와 벽 두께.
+ *
+ * WALL_T 를 CELL 의 절반으로 잡으면 "통로 폭 = 벽 두께" 가 되어, 얇은 칸막이가 아니라
+ * 블록을 쌓아 만든 구조물처럼 보인다. 통로 3 · 벽 3 의 균일한 블록 격자가 된다.
+ *
+ * CELL 을 키우면 미로를 가로지르는 거리도 함께 늘어나므로 이동 속도도 같이 올렸다.
+ * 상한 확인: 41칸 * 8 = 328 단위. 스냅샷 좌표 i16 의 1cm 정밀도로는 327.67 이 한계라
+ * 아슬아슬하게 넘친다. 그래서 protocol.ts 의 COORD_SCALE 을 50(2cm)으로 낮췄다.
+ * 2cm 오차는 플레이어 반경 0.55 에 비하면 눈에 띄지 않는다.
+ */
+export const CELL = 8
+/** 벽 두께. CELL 의 절반이라 통로 폭과 정확히 같다 — 균일한 블록 격자가 된다. */
+export const WALL_T = 4
+/** 벽 높이. 두꺼워진 만큼 높이도 올려야 블록처럼 보인다. */
+export const WALL_H = 5
 
 /** 플레이어 충돌 반지름. */
 export const PLAYER_R = 0.55
-/** 플레이어 이동 속도 (단위/초). */
-export const PLAYER_SPEED = 6.0
+/** 플레이어 이동 속도 (단위/초). CELL 이 4 → 6 으로 커진 만큼 함께 올렸다. */
+export const PLAYER_SPEED = 9.5
 /** 눈높이 (1인칭 카메라). */
 export const EYE_H = 1.55
 
 /** 열쇠 / 탈출구 상호작용 반경. */
-export const PICKUP_R = 1.3
-export const EXIT_R = 1.6
+export const PICKUP_R = 1.8
+export const EXIT_R = 2.2
 /** 상점 / 던전 입구에 반응하는 반경. */
-export const INTERACT_R = 2.4
+export const INTERACT_R = 3.2
 
 /** 원격 플레이어 렌더링 지연. 스냅샷 2개분 버퍼를 확보해 튐을 막는다. */
 export const INTERP_DELAY_MS = 100

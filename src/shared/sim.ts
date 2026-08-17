@@ -10,10 +10,47 @@
  *  - dungeon : 설정에 정의된 레벨들을 차례로 도는 미로.
  * 마지막 레벨을 깨면 다시 로비로 돌아온다. 골드와 아이템은 유지된다.
  */
-import { CLEAR_HOLD_SEC, EXIT_R, INTERACT_R, PICKUP_R, PLAYER_R, TICK_DT } from './constants'
+import { CELL, CLEAR_HOLD_SEC, EXIT_R, INTERACT_R, PICKUP_R, PLAYER_R, TICK_DT } from './constants'
+import {
+  ATTACK_COOLDOWN,
+  ATTACK_DAMAGE,
+  ATTACK_HALF_ANGLE,
+  ATTACK_RANGE,
+  ATTACK_STAMINA_COST,
+  ATTACK_SWING_SEC,
+  BOSS_RANGED_RANGE,
+  DOWN_RESPAWN_SEC,
+  ENEMY_DEFS,
+  EXHAUST_REFILL_PER_SEC,
+  EXHAUST_STUN_SEC,
+  EnemyKind,
+  HIT_INVULN_SEC,
+  PLAYER_MAX_HP,
+  PLAYER_MAX_STAMINA,
+  PROJECTILE_RADIUS,
+  PROJECTILE_SPEED,
+  PROJECTILE_TTL,
+  RESPAWN_HP_RATIO,
+  SPRINT_MULTIPLIER,
+  SPRINT_STAMINA_PER_SEC,
+  STAMINA_REGEN_DELAY,
+  STAMINA_REGEN_PER_SEC,
+  inAttackCone,
+  type EnemyKindValue,
+} from './combat'
+import { mulberry32, randInt, shuffle } from './rng'
 import { levelAt, type RunConfig } from './config'
 import { ItemId, hasItem, itemById, moveSpeedFor, withItem, type ItemIdValue } from './items'
-import { cellToWorld, createLobbyMaze, generateMaze, resolveCircle, type Cell, type Maze } from './maze'
+import {
+  cellToWorld,
+  createLobbyMaze,
+  generateMaze,
+  resolveCircle,
+  roomAt,
+  segmentBlocked,
+  type Cell,
+  type Maze,
+} from './maze'
 
 export type Zone = 'lobby' | 'dungeon'
 
@@ -27,9 +64,21 @@ export interface PlayerInput {
   yaw: number
   /** 상호작용 키(던전 입장 등). */
   interact: boolean
+  /** 달리기(Shift). 스태미나를 계속 소모한다. */
+  sprint: boolean
+  /** 공격(Space). 눌린 순간에만 발동한다. */
+  attack: boolean
 }
 
-export const NO_INPUT: PlayerInput = { tick: 0, dx: 0, dz: 0, yaw: 0, interact: false }
+export const NO_INPUT: PlayerInput = {
+  tick: 0,
+  dx: 0,
+  dz: 0,
+  yaw: 0,
+  interact: false,
+  sprint: false,
+  attack: false,
+}
 
 export interface PlayerState {
   id: number
@@ -45,6 +94,49 @@ export interface PlayerState {
   inventory: number
   /** interact 가 눌린 순간만 잡아내기 위한 직전 상태. */
   interactHeld: boolean
+  attackHeld: boolean
+
+  hp: number
+  stamina: number
+  /** 경직 남은 시간(초). 0보다 크면 움직이거나 공격할 수 없다. */
+  stunTimer: number
+  /** 스태미나 회복이 시작되기까지 남은 시간(초). */
+  regenDelay: number
+  /** 다음 공격까지 남은 시간(초). */
+  attackCooldown: number
+  /** 공격 모션이 남은 시간(초). 렌더링용. */
+  swingTimer: number
+  /** 피격 무적 남은 시간(초). */
+  invulnTimer: number
+  /** 쓰러진 뒤 부활까지 남은 시간(초). 0이면 살아 있다. */
+  downTimer: number
+}
+
+export interface EnemyState {
+  id: number
+  kind: EnemyKindValue
+  x: number
+  z: number
+  yaw: number
+  hp: number
+  /** 공격 예비 동작 남은 시간(초). 0보다 크면 제자리에서 준비 중이다. */
+  windup: number
+  /** 다음 공격까지 남은 시간(초). */
+  cooldown: number
+  /** 노리고 있는 플레이어 id. 없으면 -1. */
+  target: number
+  /** 맞았을 때 잠깐 붉게 표시하기 위한 타이머. */
+  hitFlash: number
+}
+
+export interface ProjectileState {
+  id: number
+  x: number
+  z: number
+  vx: number
+  vz: number
+  ttl: number
+  damage: number
 }
 
 export interface KeyState {
@@ -75,6 +167,9 @@ export interface GameState {
   /** 로비에서만 존재한다. */
   shopCell: Cell | null
   entranceCell: Cell | null
+  enemies: EnemyState[]
+  projectiles: ProjectileState[]
+  nextProjectileId: number
 }
 
 /** 처음 접속했을 때 주는 골드. 상점을 바로 써볼 수 있어야 한다. */
@@ -106,6 +201,9 @@ export function createRunState(config: RunConfig, seed: number): GameState {
     exitOpen: false,
     shopCell: LOBBY_SHOP_CELL,
     entranceCell: LOBBY_ENTRANCE_CELL,
+    enemies: [],
+    projectiles: [],
+    nextProjectileId: 1,
   }
 }
 
@@ -155,6 +253,15 @@ export function addPlayer(state: GameState, id: number, name: string): PlayerSta
     gold: STARTING_GOLD,
     inventory: 0,
     interactHeld: false,
+    attackHeld: false,
+    hp: PLAYER_MAX_HP,
+    stamina: PLAYER_MAX_STAMINA,
+    stunTimer: 0,
+    regenDelay: 0,
+    attackCooldown: 0,
+    swingTimer: 0,
+    invulnTimer: 0,
+    downTimer: 0,
   }
   state.players.set(id, player)
   return player
@@ -219,6 +326,7 @@ export function movePlayer(
   input: PlayerInput,
   dt: number,
   inventory = 0,
+  sprinting = false,
 ): void {
   let dx = input.dx
   let dz = input.dz
@@ -229,7 +337,7 @@ export function movePlayer(
     dz /= len
   }
 
-  const speed = moveSpeedFor(inventory)
+  const speed = moveSpeedFor(inventory) * (sprinting ? SPRINT_MULTIPLIER : 1)
   const nx = player.x + dx * speed * dt
   const nz = player.z + dz * speed * dt
   const out = { x: 0, z: 0 }
@@ -259,8 +367,17 @@ export function stepGame(
     if (input.interact && !player.interactHeld) interactPressed = true
     player.interactHeld = input.interact
 
+    updatePlayerCombat(state, player, input, dt)
+
     if (player.escaped || state.phase === 'cleared') continue
-    movePlayer(state.maze, player, input, dt, player.inventory)
+    // 경직 중이거나 쓰러져 있으면 움직일 수 없다.
+    if (player.stunTimer > 0 || player.downTimer > 0) continue
+    movePlayer(state.maze, player, input, dt, player.inventory, isSprinting(player, input))
+  }
+
+  if (state.zone === 'dungeon') {
+    updateEnemies(state, dt)
+    updateProjectiles(state, dt)
   }
 
   if (state.zone === 'lobby') {
@@ -367,9 +484,73 @@ function buildDungeonState(state: GameState, levelIndex: number): GameState {
     exitOpen: false,
     shopCell: null,
     entranceCell: null,
+    enemies: spawnEnemies(maze, dungeonSeed(state.seed, levelIndex), levelIndex),
+    projectiles: [],
+    nextProjectileId: 1,
   }
   carryPlayers(state, next)
   return next
+}
+
+/**
+ * 적 배치. 미로와 같은 시드에서 파생시켜 결정론적으로 만든다.
+ *
+ * 방에는 중간 보스를 하나씩 두고, 통로에는 일반 몹을 흩어 놓는다.
+ * 스폰 근처는 비워둔다 — 시작하자마자 둘러싸이면 손쓸 방법이 없다.
+ */
+export function spawnEnemies(maze: Maze, seed: number, levelIndex: number): EnemyState[] {
+  const rng = mulberry32((seed ^ 0x5bf03635) >>> 0)
+  const enemies: EnemyState[] = []
+  let nextId = 1
+
+  const spawnWorld = cellToWorld(maze.spawn)
+  const exitWorld = cellToWorld(maze.exit)
+  const safeRadius = CELL * 2.5
+
+  const place = (kind: EnemyKindValue, cx: number, cy: number) => {
+    const pos = cellToWorld({ x: cx, y: cy })
+    enemies.push({
+      id: nextId++,
+      kind,
+      x: pos.x,
+      z: pos.z,
+      yaw: 0,
+      hp: ENEMY_DEFS[kind].maxHp,
+      windup: 0,
+      cooldown: 0,
+      target: -1,
+      hitFlash: 0,
+    })
+  }
+
+  // 방마다 보스 하나. 방 한가운데에 둔다.
+  for (const room of maze.rooms) {
+    place(EnemyKind.Boss, room.x + ((room.w / 2) | 0), room.y + ((room.h / 2) | 0))
+  }
+
+  // 통로에 일반 몹. 레벨이 깊어질수록 늘린다.
+  const cellCount = maze.w * maze.h
+  const target = Math.min(40, Math.round(cellCount * 0.045) + levelIndex * 2)
+  const kinds: EnemyKindValue[] = [EnemyKind.Biter, EnemyKind.Biter, EnemyKind.Brute, EnemyKind.Caster]
+
+  const candidates: number[] = []
+  for (let y = 0; y < maze.h; y++) {
+    for (let x = 0; x < maze.w; x++) {
+      const world = cellToWorld({ x, y })
+      if (Math.hypot(world.x - spawnWorld.x, world.z - spawnWorld.z) < safeRadius) continue
+      if (Math.hypot(world.x - exitWorld.x, world.z - exitWorld.z) < CELL) continue
+      if (roomAt(maze, x, y)) continue // 방은 보스 담당
+      candidates.push(y * maze.w + x)
+    }
+  }
+  shuffle(rng, candidates)
+
+  for (let i = 0; i < Math.min(target, candidates.length); i++) {
+    const index = candidates[i]
+    place(kinds[randInt(rng, kinds.length)], index % maze.w, (index / maze.w) | 0)
+  }
+
+  return enemies
 }
 
 /** 존이 바뀌어도 골드와 아이템은 유지된다. 위치와 탈출 여부만 초기화한다. */
@@ -401,3 +582,292 @@ export function nearestKeyDistance(state: GameState, from: { x: number; z: numbe
 
 export { ItemId }
 export type { ItemIdValue }
+
+// ---------------------------------------------------------------------------
+// 전투
+// ---------------------------------------------------------------------------
+
+/** 달리는 중인가. 이동 중이고 스태미나가 남아 있어야 한다. */
+export function isSprinting(player: PlayerState, input: PlayerInput): boolean {
+  if (!input.sprint) return false
+  if (player.stunTimer > 0 || player.downTimer > 0) return false
+  if (player.stamina <= 0) return false
+  return Math.hypot(input.dx, input.dz) > 0.01
+}
+
+/**
+ * 플레이어의 스태미나 · 경직 · 공격 · 부활을 갱신한다.
+ *
+ * 스태미나가 0이 되는 순간 경직에 걸린다. 경직 동안은 못 움직이고 못 때리며,
+ * 끝나면 스태미나가 빠르게 채워진다. "지치면 잠깐 멈춘다"를 만드는 장치다.
+ */
+function updatePlayerCombat(
+  state: GameState,
+  player: PlayerState,
+  input: PlayerInput,
+  dt: number,
+): void {
+  player.invulnTimer = Math.max(0, player.invulnTimer - dt)
+  player.swingTimer = Math.max(0, player.swingTimer - dt)
+  player.attackCooldown = Math.max(0, player.attackCooldown - dt)
+
+  // 쓰러진 상태: 시간이 지나면 스폰 지점에서 절반 체력으로 일어난다.
+  if (player.downTimer > 0) {
+    player.downTimer -= dt
+    player.attackHeld = input.attack
+    if (player.downTimer <= 0) {
+      player.downTimer = 0
+      player.hp = Math.round(PLAYER_MAX_HP * RESPAWN_HP_RATIO)
+      player.stamina = PLAYER_MAX_STAMINA
+      player.invulnTimer = HIT_INVULN_SEC * 2
+      const pos = spawnPosition(state.maze, 0)
+      player.x = pos.x
+      player.z = pos.z
+    }
+    return
+  }
+
+  // 경직 중에는 스태미나만 빠르게 회복한다.
+  if (player.stunTimer > 0) {
+    // 빼기만 하면 부동소수점 오차로 아주 작은 음수가 남는다. 0 으로 정확히 맞춘다.
+    player.stunTimer = Math.max(0, player.stunTimer - dt)
+    player.stamina = Math.min(PLAYER_MAX_STAMINA, player.stamina + EXHAUST_REFILL_PER_SEC * dt)
+    player.attackHeld = input.attack
+    return
+  }
+
+  let spent = false
+
+  if (isSprinting(player, input)) {
+    player.stamina -= SPRINT_STAMINA_PER_SEC * dt
+    spent = true
+  }
+
+  // 공격은 눌린 순간에만. 누르고 있으면 연타되면 안 된다.
+  const attackPressed = input.attack && !player.attackHeld
+  player.attackHeld = input.attack
+  if (
+    attackPressed &&
+    player.attackCooldown <= 0 &&
+    player.stamina >= ATTACK_STAMINA_COST &&
+    !player.escaped
+  ) {
+    player.stamina -= ATTACK_STAMINA_COST
+    player.attackCooldown = ATTACK_COOLDOWN
+    player.swingTimer = ATTACK_SWING_SEC
+    spent = true
+    applyPlayerAttack(state, player)
+  }
+
+  if (spent) {
+    player.regenDelay = STAMINA_REGEN_DELAY
+  } else {
+    player.regenDelay = Math.max(0, player.regenDelay - dt)
+    if (player.regenDelay <= 0) {
+      player.stamina = Math.min(PLAYER_MAX_STAMINA, player.stamina + STAMINA_REGEN_PER_SEC * dt)
+    }
+  }
+
+  if (player.stamina <= 0) {
+    player.stamina = 0
+    player.stunTimer = EXHAUST_STUN_SEC
+  }
+}
+
+/** 앞쪽 부채꼴 안의 적을 때린다. */
+function applyPlayerAttack(state: GameState, player: PlayerState): void {
+  for (const enemy of state.enemies) {
+    if (enemy.hp <= 0) continue
+    if (!inAttackCone(player.x, player.z, player.yaw, enemy.x, enemy.z, ATTACK_RANGE, ATTACK_HALF_ANGLE)) {
+      continue
+    }
+    enemy.hp -= ATTACK_DAMAGE
+    enemy.hitFlash = 0.15
+    // 맞으면 때린 사람을 노린다. 뒤에서 때리고 빠지는 걸 막는다.
+    enemy.target = player.id
+    if (enemy.hp <= 0) {
+      enemy.hp = 0
+      player.gold += ENEMY_DEFS[enemy.kind].gold
+    }
+  }
+}
+
+/** 플레이어에게 피해를 준다. 무적 중이면 무시된다. */
+export function damagePlayer(player: PlayerState, amount: number): boolean {
+  if (player.downTimer > 0) return false
+  if (player.invulnTimer > 0) return false
+  player.hp -= amount
+  player.invulnTimer = HIT_INVULN_SEC
+  if (player.hp <= 0) {
+    player.hp = 0
+    player.downTimer = DOWN_RESPAWN_SEC
+    player.stamina = 0
+  }
+  return true
+}
+
+/** 노릴 만한 가장 가까운 플레이어. 쓰러졌거나 탈출한 사람은 제외한다. */
+function nearestTarget(state: GameState, x: number, z: number, range: number): PlayerState | null {
+  let best: PlayerState | null = null
+  let bestDist = range
+  for (const player of state.players.values()) {
+    if (player.escaped || player.downTimer > 0) continue
+    const dist = Math.hypot(player.x - x, player.z - z)
+    if (dist <= bestDist) {
+      bestDist = dist
+      best = player
+    }
+  }
+  return best
+}
+
+function updateEnemies(state: GameState, dt: number): void {
+  for (const enemy of state.enemies) {
+    if (enemy.hp <= 0) continue
+    const def = ENEMY_DEFS[enemy.kind]
+    enemy.hitFlash = Math.max(0, enemy.hitFlash - dt)
+    enemy.cooldown = Math.max(0, enemy.cooldown - dt)
+
+    // 이미 노리던 상대가 유효하지 않으면 새로 찾는다.
+    let target = enemy.target >= 0 ? state.players.get(enemy.target) ?? null : null
+    if (target && (target.escaped || target.downTimer > 0)) target = null
+    if (!target) {
+      target = nearestTarget(state, enemy.x, enemy.z, def.aggroRange)
+      enemy.target = target?.id ?? -1
+    }
+
+    if (!target) {
+      enemy.windup = 0
+      continue
+    }
+
+    const dx = target.x - enemy.x
+    const dz = target.z - enemy.z
+    const dist = Math.hypot(dx, dz)
+    enemy.yaw = Math.atan2(dx, dz)
+
+    // 예비 동작 중에는 제자리에 멈춘다. 이게 있어야 피할 여지가 생긴다.
+    if (enemy.windup > 0) {
+      enemy.windup -= dt
+      if (enemy.windup <= 0) {
+        enemy.windup = 0
+        fireEnemyAttack(state, enemy, target, dist)
+      }
+      continue
+    }
+
+    const useRanged = def.ranged || (enemy.kind === EnemyKind.Boss && dist > def.attackRange * 1.4)
+    const reach = useRanged ? (def.ranged ? def.attackRange : BOSS_RANGED_RANGE) : def.attackRange
+
+    if (dist <= reach && enemy.cooldown <= 0 && hasLineOfSight(state, enemy, target, useRanged)) {
+      enemy.windup = def.windup
+      continue
+    }
+
+    // 이동. 원거리 적은 너무 가까우면 물러난다.
+    let moveX = 0
+    let moveZ = 0
+    if (def.keepDistance > 0 && dist < def.keepDistance) {
+      moveX = -dx / (dist || 1)
+      moveZ = -dz / (dist || 1)
+    } else if (dist > reach * 0.85) {
+      moveX = dx / (dist || 1)
+      moveZ = dz / (dist || 1)
+    }
+
+    if (moveX !== 0 || moveZ !== 0) {
+      const out = { x: 0, z: 0 }
+      resolveCircle(
+        state.maze,
+        enemy.x + moveX * def.speed * dt,
+        enemy.z + moveZ * def.speed * dt,
+        def.radius,
+        out,
+      )
+      enemy.x = out.x
+      enemy.z = out.z
+    }
+  }
+
+  // 죽은 적은 잠깐 두었다가 치운다. 바로 지우면 죽는 순간이 안 보인다.
+  if (state.enemies.some((e) => e.hp <= 0)) {
+    for (const enemy of state.enemies) {
+      if (enemy.hp <= 0) enemy.hitFlash -= dt
+    }
+    state.enemies = state.enemies.filter((e) => e.hp > 0 || e.hitFlash > -0.6)
+  }
+}
+
+/** 원거리 공격은 벽 너머로 쏠 수 없다. */
+function hasLineOfSight(
+  state: GameState,
+  enemy: EnemyState,
+  target: PlayerState,
+  ranged: boolean,
+): boolean {
+  if (!ranged) return true
+  return !segmentBlocked(state.maze, enemy.x, enemy.z, target.x, target.z)
+}
+
+function fireEnemyAttack(
+  state: GameState,
+  enemy: EnemyState,
+  target: PlayerState,
+  distAtWindupStart: number,
+): void {
+  const def = ENEMY_DEFS[enemy.kind]
+  enemy.cooldown = def.attackCooldown
+
+  const dx = target.x - enemy.x
+  const dz = target.z - enemy.z
+  const dist = Math.hypot(dx, dz)
+  const useRanged = def.ranged || (enemy.kind === EnemyKind.Boss && distAtWindupStart > def.attackRange * 1.4)
+
+  if (useRanged) {
+    if (dist < 1e-4) return
+    state.projectiles.push({
+      id: state.nextProjectileId++,
+      x: enemy.x,
+      z: enemy.z,
+      vx: (dx / dist) * PROJECTILE_SPEED,
+      vz: (dz / dist) * PROJECTILE_SPEED,
+      ttl: PROJECTILE_TTL,
+      damage: def.attackDamage,
+    })
+    return
+  }
+
+  // 근접: 예비 동작이 끝난 시점에도 사거리 안에 있어야 맞는다.
+  if (dist <= def.attackRange + PLAYER_R) damagePlayer(target, def.attackDamage)
+}
+
+function updateProjectiles(state: GameState, dt: number): void {
+  if (state.projectiles.length === 0) return
+  const survivors: ProjectileState[] = []
+
+  for (const projectile of state.projectiles) {
+    projectile.ttl -= dt
+    if (projectile.ttl <= 0) continue
+
+    projectile.x += projectile.vx * dt
+    projectile.z += projectile.vz * dt
+
+    // 벽에 닿으면 사라진다. resolveCircle 이 위치를 밀어냈다면 벽에 박은 것이다.
+    const out = { x: 0, z: 0 }
+    resolveCircle(state.maze, projectile.x, projectile.z, PROJECTILE_RADIUS, out)
+    if (Math.abs(out.x - projectile.x) > 1e-4 || Math.abs(out.z - projectile.z) > 1e-4) continue
+
+    let hit = false
+    for (const player of state.players.values()) {
+      if (player.escaped || player.downTimer > 0) continue
+      if (Math.hypot(player.x - projectile.x, player.z - projectile.z) <= PLAYER_R + PROJECTILE_RADIUS) {
+        damagePlayer(player, projectile.damage)
+        hit = true
+        break
+      }
+    }
+    if (!hit) survivors.push(projectile)
+  }
+
+  state.projectiles = survivors
+}

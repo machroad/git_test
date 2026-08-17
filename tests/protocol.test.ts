@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { MAX_PLAYERS } from '../src/shared/constants'
 import {
   MsgType,
+  MAX_SNAPSHOT_ENEMIES,
+  MAX_SNAPSHOT_PROJECTILES,
   SNAPSHOT_MAX_BYTES,
   decodeInput,
   decodeJson,
@@ -16,7 +18,7 @@ import {
 
 describe('프로토콜', () => {
   it('입력을 왕복시켜도 값이 유지된다', () => {
-    const original = { tick: 4242, dx: 0.71, dz: -0.7, yaw: 2.13, interact: true }
+    const original = { tick: 4242, dx: 0.71, dz: -0.7, yaw: 2.13, interact: true, sprint: true, attack: false }
     const decoded = decodeInput(encodeInput(original))
     expect(decoded.tick).toBe(original.tick)
     expect(decoded.dx).toBeCloseTo(original.dx, 1)
@@ -26,7 +28,7 @@ describe('프로토콜', () => {
   })
 
   it('상호작용 플래그가 눌리지 않은 경우도 왕복된다', () => {
-    expect(decodeInput(encodeInput({ tick: 1, dx: 0, dz: 0, yaw: 0, interact: false })).interact).toBe(
+    expect(decodeInput(encodeInput({ tick: 1, dx: 0, dz: 0, yaw: 0, interact: false, sprint: false, attack: false })).interact).toBe(
       false,
     )
   })
@@ -38,10 +40,12 @@ describe('프로토콜', () => {
       exitOpen: true,
       cleared: false,
       players: [
-        { id: 1, x: 12.34, z: 56.78, yaw: 1.5, escaped: false, lastInputTick: 300, gold: 240, inventory: 5 },
-        { id: 2, x: 0.5, z: 163.9, yaw: -2.9, escaped: true, lastInputTick: 299, gold: 0, inventory: 0 },
+        { id: 1, x: 12.34, z: 56.78, yaw: 1.5, escaped: false, lastInputTick: 300, gold: 240, inventory: 5, hp: 200, stamina: 128, stunned: false, downed: false, swinging: true },
+        { id: 2, x: 0.5, z: 163.9, yaw: -2.9, escaped: true, lastInputTick: 299, gold: 0, inventory: 0, hp: 0, stamina: 255, stunned: true, downed: true, swinging: false },
       ],
       keys: [{ x: 40.25, z: 41.5, collected: true, carrier: 2 }],
+      enemies: [{ id: 7, kind: 2, x: 30.5, z: 12.25, yaw: -1.2, hp: 180, windup: true }],
+      projectiles: [{ id: 3, x: 44.5, z: 20.25 }],
     }
 
     const decoded = decodeSnapshot(encodeSnapshot(snapshot))
@@ -57,6 +61,14 @@ describe('프로토콜', () => {
     expect(decoded.players[0].inventory).toBe(5)
     expect(decoded.keys[0].carrier).toBe(2)
     expect(decoded.keys[0].collected).toBe(true)
+    expect(decoded.enemies).toHaveLength(1)
+    expect(decoded.enemies[0].kind).toBe(2)
+    expect(decoded.enemies[0].x).toBeCloseTo(30.5, 2)
+    expect(decoded.enemies[0].windup).toBe(true)
+    expect(decoded.projectiles[0].x).toBeCloseTo(44.5, 2)
+    expect(decoded.players[0].hp).toBe(200)
+    expect(decoded.players[0].swinging).toBe(true)
+    expect(decoded.players[1].downed).toBe(true)
   })
 
   it('열쇠를 아무도 안 들고 있으면 carrier 가 -1 로 돌아온다', () => {
@@ -67,6 +79,8 @@ describe('프로토콜', () => {
       cleared: false,
       players: [],
       keys: [{ x: 1, z: 2, collected: false, carrier: -1 }],
+      enemies: [],
+      projectiles: [],
     }
     expect(decodeSnapshot(encodeSnapshot(snapshot)).keys[0].carrier).toBe(-1)
   })
@@ -87,8 +101,27 @@ describe('프로토콜', () => {
         lastInputTick: 0xffffff,
         gold: 65535,
         inventory: 255,
+        hp: 255,
+        stamina: 255,
+        stunned: true,
+        downed: true,
+        swinging: true,
       })),
       keys: Array.from({ length: 8 }, () => ({ x: 100, z: 100, collected: true, carrier: 1 })),
+      enemies: Array.from({ length: MAX_SNAPSHOT_ENEMIES }, (_, i) => ({
+        id: i + 1,
+        kind: 3,
+        x: 245.9,
+        z: 245.9,
+        yaw: Math.PI,
+        hp: 255,
+        windup: true,
+      })),
+      projectiles: Array.from({ length: MAX_SNAPSHOT_PROJECTILES }, (_, i) => ({
+        id: i + 1,
+        x: 245.9,
+        z: 245.9,
+      })),
     }
     expect(encodeSnapshot(snapshot).length).toBeLessThanOrEqual(SNAPSHOT_MAX_BYTES)
   })
@@ -101,6 +134,8 @@ describe('프로토콜', () => {
       cleared: false,
       players: [],
       keys: [],
+      enemies: [],
+      projectiles: [],
     }
     expect(decodeSnapshot(encodeSnapshot(lobby)).levelIndex).toBe(-1)
   })

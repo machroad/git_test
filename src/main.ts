@@ -11,6 +11,7 @@
  *   ?lat=120&jitter=20&loss=0.05   인프로세스 전송에 주입할 네트워크 조건
  */
 import './style.css'
+import { CELL } from './shared/constants'
 import { installBrowserCompat } from './client/compat'
 import { debugSettings } from './client/debug-settings'
 import { loadStoredConfig, showSetupScreen } from './client/setup-screen'
@@ -29,6 +30,8 @@ declare global {
       host: () => GameHost | null
       hub: () => InProcessHub | null
       config: () => RunConfig
+      /** 셀 크기. 테스트에서 셀 좌표를 월드 좌표로 바꿀 때 쓴다. */
+      cell: number
     }
   }
 }
@@ -90,7 +93,13 @@ async function boot() {
   }
 
   if (views.length > 0) focusView(views[0])
-  window.__game = { views, host: () => host, hub: () => hub, config: () => runConfig }
+  window.__game = {
+    views,
+    host: () => host,
+    hub: () => hub,
+    config: () => runConfig,
+    cell: CELL,
+  }
   startRenderLoop()
   window.addEventListener('resize', () => {
     for (const view of views) view.resize()

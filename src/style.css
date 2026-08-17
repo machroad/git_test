@@ -616,3 +616,54 @@ body.minimap-expanded .stage--4 .view:not(:first-child) .hud__minimap {
   outline: 2px solid #ffd964;
   outline-offset: 2px;
 }
+
+/* ---------------------------------------------------------------------------
+   체력 · 스태미나 게이지
+   --------------------------------------------------------------------------- */
+.bars {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  width: min(320px, 42%);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  transition: opacity 0.2s ease;
+}
+
+.bars.is-downed {
+  opacity: 0.45;
+}
+
+.bar {
+  height: 12px;
+  border: 1px solid var(--hud-border);
+  border-radius: 7px;
+  background: rgba(6, 8, 14, 0.72);
+  overflow: hidden;
+}
+
+.bar--stamina {
+  height: 7px;
+}
+
+.bar__fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 6px;
+  transition: width 0.08s linear;
+}
+
+.bar--hp .bar__fill {
+  background: linear-gradient(90deg, #ff5a6a, #ff8f7a);
+}
+
+.bar--stamina .bar__fill {
+  background: linear-gradient(90deg, #56d6a0, #9ee7c4);
+}
+
+/* 경직 중임을 색으로 알린다. 왜 안 움직이는지 모르면 버그로 보인다. */
+.bar--stamina .bar__fill.is-exhausted {
+  background: linear-gradient(90deg, #ff9f43, #ffd08a);
+}

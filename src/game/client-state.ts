@@ -54,6 +54,23 @@ export interface RenderKey {
   carrier: number
 }
 
+export interface RenderEnemy {
+  id: number
+  kind: number
+  x: number
+  z: number
+  yaw: number
+  /** 체력 비율 0~1. */
+  hp: number
+  windup: boolean
+}
+
+export interface RenderProjectile {
+  id: number
+  x: number
+  z: number
+}
+
 interface TimedSnapshot {
   recvTime: number
   snapshot: SnapshotMsg
@@ -73,6 +90,13 @@ export class GameClientState {
   /** 내 골드와 아이템. 스냅샷에서 갱신된다. */
   gold = 0
   inventory = 0
+  /** 내 체력과 스태미나 비율(0~1). HUD 게이지에 그대로 쓴다. */
+  hpRatio = 1
+  staminaRatio = 1
+  stunned = false
+  downed = false
+  /** 예측이 호스트와 같은 속도를 쓰기 위한 스태미나 근사치(0~255). */
+  private stamina = 255
 
   /** 마지막 고정 스텝에서의 로컬 예측 위치. 호스트 권위 위치와 직접 비교되는 값이다. */
   readonly predicted = { x: 0, z: 0 }
@@ -91,7 +115,7 @@ export class GameClientState {
   private inputTick = 0
   private hasAuthoritativePosition = false
   private stepAccumulator = 0
-  private desiredInput = { dx: 0, dz: 0, yaw: 0, interact: false }
+  private desiredInput = { dx: 0, dz: 0, yaw: 0, interact: false, sprint: false, attack: false }
   private localEscaped = false
   private onLevelChanged?: (maze: Maze) => void
 
@@ -189,6 +213,11 @@ export class GameClientState {
       this.localEscaped = mine.escaped
       this.gold = mine.gold
       this.inventory = mine.inventory
+      this.hpRatio = mine.hp / 255
+      this.staminaRatio = mine.stamina / 255
+      this.stamina = mine.stamina
+      this.stunned = mine.stunned
+      this.downed = mine.downed
       this.reconcile(mine.x, mine.z, mine.lastInputTick)
     }
   }
@@ -249,8 +278,15 @@ export class GameClientState {
   // -------------------------------------------------------------------------
 
   /** 매 프레임 현재 조작 의도를 넣어준다. 실제 전송은 고정 스텝에서 일어난다. */
-  setInput(dx: number, dz: number, yaw: number, interact = false): void {
-    this.desiredInput = { dx, dz, yaw, interact }
+  setInput(
+    dx: number,
+    dz: number,
+    yaw: number,
+    interact = false,
+    sprint = false,
+    attack = false,
+  ): void {
+    this.desiredInput = { dx, dz, yaw, interact, sprint, attack }
     this.yaw = yaw
   }
 
@@ -304,12 +340,15 @@ export class GameClientState {
       dz: this.desiredInput.dz,
       yaw: this.desiredInput.yaw,
       interact: this.desiredInput.interact,
+      sprint: this.desiredInput.sprint,
+      attack: this.desiredInput.attack,
     }
     this.transport.send(encodeInput(input), false)
 
-    if (!this.localEscaped && !this.cleared) {
-      // 아이템이 속도를 바꾸므로 예측도 같은 인벤토리로 계산해야 호스트와 어긋나지 않는다.
-      movePlayer(this.maze!, this.predicted, input, TICK_DT, this.inventory)
+    if (!this.localEscaped && !this.cleared && !this.stunned && !this.downed) {
+      // 아이템과 달리기가 속도를 바꾸므로 예측도 같은 조건으로 계산해야 호스트와 어긋나지 않는다.
+      const sprinting = input.sprint && this.stamina > 0 && Math.hypot(input.dx, input.dz) > 0.01
+      movePlayer(this.maze!, this.predicted, input, TICK_DT, this.inventory, sprinting)
     }
 
     this.history.push({ tick: this.inputTick, x: this.predicted.x, z: this.predicted.z })
@@ -410,6 +449,39 @@ export class GameClientState {
         collected: kb.collected,
         carrier: kb.carrier,
       }
+    })
+  }
+
+  renderEnemies(): RenderEnemy[] {
+    const window = this.interpolationWindow()
+    if (!window) return []
+    const { a, b, t } = window
+
+    // 적은 매 스냅샷마다 목록이 바뀔 수 있다(죽거나, 잘려서 빠지거나).
+    // 최신 스냅샷을 기준으로 삼고, 이전 스냅샷에 같은 id 가 있을 때만 보간한다.
+    return b.enemies.map((eb) => {
+      const ea = a.enemies.find((e) => e.id === eb.id)
+      if (!ea) return { ...eb, hp: eb.hp / 255 }
+      return {
+        id: eb.id,
+        kind: eb.kind,
+        x: lerp(ea.x, eb.x, t),
+        z: lerp(ea.z, eb.z, t),
+        yaw: lerpAngle(ea.yaw, eb.yaw, t),
+        hp: eb.hp / 255,
+        windup: eb.windup,
+      }
+    })
+  }
+
+  renderProjectiles(): RenderProjectile[] {
+    const window = this.interpolationWindow()
+    if (!window) return []
+    const { a, b, t } = window
+    return b.projectiles.map((pb) => {
+      const pa = a.projectiles.find((p) => p.id === pb.id)
+      if (!pa) return pb
+      return { id: pb.id, x: lerp(pa.x, pb.x, t), z: lerp(pa.z, pb.z, t) }
     })
   }
 

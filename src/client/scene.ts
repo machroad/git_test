@@ -24,8 +24,9 @@ import type { TransformNode } from '@babylonjs/core/Meshes/transformNode'
 import '@babylonjs/core/Meshes/thinInstanceMesh'
 
 import { CELL, EYE_H, WALL_H, WALL_T } from '../shared/constants'
+import { ENEMY_DEFS, EnemyKind, type EnemyKindValue } from '../shared/combat'
 import { cellToWorld, collectAllWalls, type Maze } from '../shared/maze'
-import type { RenderKey, RenderPlayer } from '../game/client-state'
+import type { RenderEnemy, RenderKey, RenderPlayer, RenderProjectile } from '../game/client-state'
 
 /** 플레이어 색. id 순서대로 배정된다. */
 export const PLAYER_COLORS: [number, number, number][] = [
@@ -46,6 +47,22 @@ interface PlayerVisual {
   nose: Mesh
 }
 
+interface EnemyVisual {
+  root: Mesh
+  body: Mesh
+  material: StandardMaterial
+  kind: number
+  baseEmissive: Color3
+}
+
+/** 적 종류별 겉모습. 실루엣이 달라야 멀리서도 무엇인지 안다. */
+const ENEMY_LOOKS: Record<EnemyKindValue, { color: Color3; shape: 'sphere' | 'box' | 'cone' }> = {
+  [EnemyKind.Biter]: { color: new Color3(0.95, 0.35, 0.3), shape: 'sphere' },
+  [EnemyKind.Brute]: { color: new Color3(0.85, 0.55, 0.2), shape: 'box' },
+  [EnemyKind.Caster]: { color: new Color3(0.6, 0.35, 1), shape: 'cone' },
+  [EnemyKind.Boss]: { color: new Color3(1, 0.2, 0.45), shape: 'box' },
+}
+
 export class MazeScene {
   readonly engine: Engine
   readonly scene: Scene
@@ -60,6 +77,10 @@ export class MazeScene {
   private entranceMesh: Mesh | null = null
   private keyMaterial: StandardMaterial
   private players = new Map<number, PlayerVisual>()
+  private enemies = new Map<number, EnemyVisual>()
+  private projectiles = new Map<number, Mesh>()
+  private enemyMaterials = new Map<string, StandardMaterial>()
+  private projectileMaterial: StandardMaterial | null = null
   private torch: PointLight
   private wallMaterial: StandardMaterial
   private groundMaterial: StandardMaterial
@@ -103,6 +124,9 @@ export class MazeScene {
     this.wallMaterial.diffuseTexture = createStripeTexture(this.scene)
     this.wallMaterial.diffuseColor = new Color3(0.62, 0.66, 0.82)
     this.wallMaterial.specularColor = new Color3(0.05, 0.05, 0.06)
+    // 카메라가 순간적으로 벽 안으로 들어갈 때가 있다. 뒷면을 그려두면
+    // 반대편이 비쳐 보이는 대신 어두워지기만 해서 훨씬 덜 어색하다.
+    this.wallMaterial.backFaceCulling = false
 
     // 바닥 격자는 칸 경계를 보여줘서 이동 거리를 가늠하게 해준다.
     this.groundMaterial = new StandardMaterial('ground', this.scene)
@@ -256,6 +280,63 @@ export class MazeScene {
     visual.nose.setEnabled(visible)
   }
 
+  /** 적 메시를 스냅샷에 맞춰 갱신한다. 없어진 적은 지운다. */
+  syncEnemies(enemies: RenderEnemy[]): void {
+    const seen = new Set<number>()
+    for (const enemy of enemies) {
+      seen.add(enemy.id)
+      let visual = this.enemies.get(enemy.id)
+      if (!visual || visual.kind !== enemy.kind) {
+        visual?.root.dispose()
+        visual = this.createEnemyVisual(enemy.kind)
+        this.enemies.set(enemy.id, visual)
+      }
+      visual.root.position.set(enemy.x, 0, enemy.z)
+      visual.root.rotation.y = enemy.yaw
+
+      // 예비 동작 중에는 몸이 부풀어 오른다. "지금 때린다"를 미리 알려야 피할 수 있다.
+      const scale = enemy.windup ? 1.22 : 1
+      visual.body.scaling.set(scale, scale, scale)
+      // 체력이 줄면 어두워진다. 체력바를 따로 띄우지 않아도 상태가 보인다.
+      const shade = 0.35 + enemy.hp * 0.65
+      visual.material.emissiveColor = visual.baseEmissive.scale(enemy.windup ? 2.2 : shade)
+    }
+
+    for (const [id, visual] of this.enemies) {
+      if (seen.has(id)) continue
+      visual.root.dispose()
+      this.enemies.delete(id)
+    }
+  }
+
+  syncProjectiles(projectiles: RenderProjectile[]): void {
+    const seen = new Set<number>()
+    for (const projectile of projectiles) {
+      seen.add(projectile.id)
+      let mesh = this.projectiles.get(projectile.id)
+      if (!mesh) {
+        if (!this.projectileMaterial) {
+          const material = new StandardMaterial('projectileMat', this.scene)
+          material.diffuseColor = new Color3(0.75, 0.45, 1)
+          material.emissiveColor = new Color3(0.6, 0.3, 1)
+          material.specularColor = new Color3(0, 0, 0)
+          this.projectileMaterial = material
+        }
+        mesh = CreateSphere(`projectile${projectile.id}`, { diameter: 0.7, segments: 8 }, this.scene)
+        mesh.material = this.projectileMaterial
+        mesh.isPickable = false
+        this.projectiles.set(projectile.id, mesh)
+      }
+      mesh.position.set(projectile.x, 1.2, projectile.z)
+    }
+
+    for (const [id, mesh] of this.projectiles) {
+      if (seen.has(id)) continue
+      mesh.dispose()
+      this.projectiles.delete(id)
+    }
+  }
+
   syncKeys(keys: RenderKey[], exitOpen: boolean, dt: number): void {
     this.elapsed += dt
 
@@ -306,6 +387,41 @@ export class MazeScene {
   dispose(): void {
     this.scene.dispose()
     this.engine.dispose()
+  }
+
+  private createEnemyVisual(kind: number): EnemyVisual {
+    const def = ENEMY_DEFS[kind as EnemyKindValue] ?? ENEMY_DEFS[EnemyKind.Biter]
+    const look = ENEMY_LOOKS[kind as EnemyKindValue] ?? ENEMY_LOOKS[EnemyKind.Biter]
+
+    let material = this.enemyMaterials.get(String(kind))
+    if (!material) {
+      material = new StandardMaterial(`enemyMat${kind}`, this.scene)
+      material.diffuseColor = look.color
+      material.specularColor = new Color3(0.05, 0.05, 0.05)
+      this.enemyMaterials.set(String(kind), material)
+    }
+
+    const root = CreateBox(`enemyRoot${kind}`, { size: 0.001 }, this.scene)
+    root.isVisible = false
+    root.isPickable = false
+
+    // 종류마다 실루엣을 다르게 해서 멀리서도 구분되게 한다.
+    const body =
+      look.shape === 'sphere'
+        ? CreateSphere('enemyBody', { diameter: def.radius * 2.1, segments: 10 }, this.scene)
+        : look.shape === 'box'
+          ? CreateBox('enemyBody', { size: def.radius * 1.9 }, this.scene)
+          : CreateCylinder(
+              'enemyBody',
+              { diameterTop: 0, diameterBottom: def.radius * 2.2, height: def.radius * 3, tessellation: 8 },
+              this.scene,
+            )
+    body.material = material
+    body.position.y = def.radius * 1.2
+    body.isPickable = false
+    body.parent = root
+
+    return { root, body, material, kind, baseEmissive: look.color.scale(0.5) }
   }
 
   private createPlayerVisual(id: number): PlayerVisual {

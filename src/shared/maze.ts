@@ -508,7 +508,9 @@ export function resolveCircle(
 export function segmentBlocked(maze: Maze, x0: number, z0: number, x1: number, z1: number): boolean {
   const dx = x1 - x0
   const dz = z1 - z0
-  const steps = Math.max(2, Math.ceil(Math.hypot(dx, dz) / (WALL_T * 0.5)))
+  // 표본 간격은 벽 두께가 아니라 플레이어 반경 기준으로 잡는다.
+  // 벽이 두꺼워졌다고 간격을 키우면 모서리를 스쳐 지나가는 경우를 놓친다.
+  const steps = Math.max(2, Math.ceil(Math.hypot(dx, dz) / (PLAYER_R * 0.5)))
   const probe = { x: 0, z: 0 }
   for (let i = 1; i <= steps; i++) {
     const t = i / steps

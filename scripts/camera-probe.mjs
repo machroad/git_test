@@ -12,6 +12,7 @@
  * 그게 "화면이 뚝뚝 끊긴다"의 정체였다.
  */
 
+import { WALL_T } from '../src/shared/constants.ts'
 import { generateMaze, cellToWorld } from '../src/shared/maze.ts'
 import { CameraController } from '../src/client/camera.ts'
 
@@ -61,5 +62,6 @@ console.log(`  0.15 이상 튀는 구간 : ${jumps}회`)
 console.log(`  최대 점프 폭 : ${maxJump.toFixed(2)} 단위`)
 const maxOver = Math.max(...overshoot)
 const overFrames = overshoot.filter((o) => o > 0.02).length
-console.log(`  벽 안쪽으로 넘어간 최대 깊이 : ${maxOver.toFixed(2)} 단위 (벽 두께 0.4)`)
+// 넘어간 깊이가 벽 두께보다 작으면 벽 "안"에 머무는 것이라 반대편이 비쳐 보이지 않는다.
+console.log(`  벽 안쪽으로 넘어간 최대 깊이 : ${maxOver.toFixed(2)} 단위 (벽 두께 ${WALL_T})`)
 console.log(`  넘어가 있던 프레임 : ${overFrames}/${STEPS}`)

@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { CELL, INTERACT_R, PLAYER_R, TICK_DT } from '../src/shared/constants'
 import type { RunConfig } from '../src/shared/config'
 import { ITEMS, ItemId, hasItem, moveSpeedFor } from '../src/shared/items'
+import {
+  EXHAUST_STUN_SEC,
+  ENEMY_DEFS,
+  EnemyKind,
+  PLAYER_MAX_HP,
+  PLAYER_MAX_STAMINA,
+  type EnemyKindValue,
+} from '../src/shared/combat'
 import { cellToWorld } from '../src/shared/maze'
 import {
   LOBBY_ENTRANCE_CELL,
@@ -10,12 +18,30 @@ import {
   addPlayer,
   buyItem,
   createRunState,
+  damagePlayer,
   enterDungeon,
   removePlayer,
   stepGame,
+  type EnemyState,
   type GameState,
   type PlayerInput,
 } from '../src/shared/sim'
+
+/** 테스트용 적 하나. 배치 로직을 거치지 않고 원하는 자리에 바로 놓는다. */
+function makeEnemy(kind: EnemyKindValue, x: number, z: number): EnemyState {
+  return {
+    id: 1,
+    kind,
+    x,
+    z,
+    yaw: 0,
+    hp: ENEMY_DEFS[kind].maxHp,
+    windup: 0,
+    cooldown: 0,
+    target: -1,
+    hitFlash: 0,
+  }
+}
 
 const CONFIG: RunConfig = {
   levels: [
@@ -24,8 +50,14 @@ const CONFIG: RunConfig = {
   ],
 }
 
-function input(dx: number, dz: number, tick = 1, interact = false): PlayerInput {
-  return { tick, dx, dz, yaw: 0, interact }
+function input(
+  dx: number,
+  dz: number,
+  tick = 1,
+  interact = false,
+  extra: Partial<PlayerInput> = {},
+): PlayerInput {
+  return { tick, dx, dz, yaw: 0, interact, sprint: false, attack: false, ...extra }
 }
 
 /** 로비를 건너뛰고 던전 1층에서 시작하는 상태를 만든다. */
@@ -375,5 +407,235 @@ describe('재화와 상점', () => {
     const plainStart = plainPlayer.x
     stepGame(plain, new Map([[1, input(1, 0)]]), TICK_DT)
     expect(fast).toBeGreaterThan(plainPlayer.x - plainStart)
+  })
+})
+
+describe('플레이어 스탯과 액션', () => {
+  it('달리면 스태미나가 줄고 더 빨리 움직인다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    const startStamina = player.stamina
+    const startX = player.x
+    stepGame(state, new Map([[1, input(1, 0, 1, false, { sprint: true })]]))
+    const sprintDistance = player.x - startX
+    expect(player.stamina).toBeLessThan(startStamina)
+
+    const plain = dungeonState(CONFIG, 31)
+    const plainPlayer = plain.players.get(1)!
+    const plainStart = plainPlayer.x
+    stepGame(plain, new Map([[1, input(1, 0)]]))
+    expect(sprintDistance).toBeGreaterThan(plainPlayer.x - plainStart)
+    // 안 달리면 스태미나가 줄지 않는다.
+    expect(plainPlayer.stamina).toBe(PLAYER_MAX_STAMINA)
+  })
+
+  it('제자리에서 Shift 만 눌러도 스태미나가 줄지 않는다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    for (let i = 0; i < 20; i++) {
+      stepGame(state, new Map([[1, input(0, 0, i + 1, false, { sprint: true })]]))
+    }
+    expect(player.stamina).toBe(PLAYER_MAX_STAMINA)
+  })
+
+  it('스태미나가 바닥나면 경직에 걸리고 그동안 못 움직인다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+
+    // 스태미나가 0이 될 때까지 계속 달린다.
+    let tick = 1
+    while (player.stunTimer <= 0 && tick < 400) {
+      stepGame(state, new Map([[1, input(1, 0, tick++, false, { sprint: true })]]))
+    }
+    expect(player.stunTimer).toBeGreaterThan(0)
+    expect(player.stamina).toBe(0)
+
+    // 경직 중에는 입력을 줘도 제자리다.
+    const stuckX = player.x
+    const stuckZ = player.z
+    stepGame(state, new Map([[1, input(1, 0, tick++)]]))
+    expect(player.x).toBe(stuckX)
+    expect(player.z).toBe(stuckZ)
+  })
+
+  it('경직이 끝나면 스태미나가 다시 찬다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    player.stamina = 0
+    player.stunTimer = EXHAUST_STUN_SEC
+
+    for (let i = 0; i < 200 && player.stunTimer > 0; i++) {
+      stepGame(state, new Map([[1, input(0, 0, i + 1)]]))
+    }
+    expect(player.stunTimer).toBe(0)
+    expect(player.stamina).toBeGreaterThan(0)
+  })
+
+  it('가만히 있으면 스태미나가 회복된다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    player.stamina = 20
+
+    for (let i = 0; i < 60; i++) stepGame(state, new Map([[1, input(0, 0, i + 1)]]))
+    expect(player.stamina).toBeGreaterThan(20)
+  })
+
+  it('공격하면 스태미나를 쓰고 앞쪽 적에게 피해를 준다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    state.enemies = [makeEnemy(EnemyKind.Biter, player.x, player.z + 2)]
+    player.yaw = 0 // +Z 를 본다
+    const hpBefore = state.enemies[0].hp
+
+    stepGame(state, new Map([[1, input(0, 0, 1, false, { attack: true })]]))
+
+    expect(state.enemies[0].hp).toBeLessThan(hpBefore)
+    expect(player.stamina).toBeLessThan(PLAYER_MAX_STAMINA)
+  })
+
+  it('뒤에 있는 적은 공격에 맞지 않는다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    state.enemies = [makeEnemy(EnemyKind.Biter, player.x, player.z - 2)]
+    player.yaw = 0
+    const hpBefore = state.enemies[0].hp
+
+    stepGame(state, new Map([[1, input(0, 0, 1, false, { attack: true })]]))
+    expect(state.enemies[0].hp).toBe(hpBefore)
+  })
+
+  it('공격 버튼을 누르고 있어도 연타되지 않는다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    state.enemies = [makeEnemy(EnemyKind.Brute, player.x, player.z + 2)]
+    player.yaw = 0
+
+    stepGame(state, new Map([[1, input(0, 0, 1, false, { attack: true })]]))
+    const afterFirst = state.enemies[0].hp
+    for (let i = 0; i < 5; i++) {
+      stepGame(state, new Map([[1, input(0, 0, 2 + i, false, { attack: true })]]))
+    }
+    expect(state.enemies[0].hp).toBe(afterFirst)
+  })
+
+  it('적을 처치하면 골드를 얻는다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    const enemy = makeEnemy(EnemyKind.Biter, player.x, player.z + 2)
+    enemy.hp = 1
+    state.enemies = [enemy]
+    player.yaw = 0
+    const goldBefore = player.gold
+
+    stepGame(state, new Map([[1, input(0, 0, 1, false, { attack: true })]]))
+    expect(enemy.hp).toBe(0)
+    expect(player.gold).toBeGreaterThan(goldBefore)
+  })
+
+  it('체력이 0이 되면 쓰러졌다가 부활한다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+
+    damagePlayer(player, PLAYER_MAX_HP)
+    expect(player.hp).toBe(0)
+    expect(player.downTimer).toBeGreaterThan(0)
+
+    for (let i = 0; i < 200 && player.downTimer > 0; i++) {
+      stepGame(state, new Map([[1, input(0, 0, i + 1)]]))
+    }
+    expect(player.downTimer).toBe(0)
+    expect(player.hp).toBeGreaterThan(0)
+  })
+
+  it('피격 직후에는 잠깐 무적이다', () => {
+    // 없으면 적에게 둘러싸였을 때 한 틱에 여러 번 맞아 즉사한다.
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    expect(damagePlayer(player, 10)).toBe(true)
+    expect(damagePlayer(player, 10)).toBe(false)
+    expect(player.hp).toBe(PLAYER_MAX_HP - 10)
+  })
+})
+
+describe('적', () => {
+  it('방마다 보스가 하나씩 있고 통로에는 일반 몹이 흩어져 있다', () => {
+    const state = dungeonState(CONFIG, 4242)
+    const bosses = state.enemies.filter((e) => e.kind === EnemyKind.Boss)
+    expect(bosses).toHaveLength(state.maze.rooms.length)
+    expect(state.enemies.length).toBeGreaterThan(bosses.length)
+
+    const kinds = new Set(state.enemies.map((e) => e.kind))
+    // 세 종류의 일반 몹이 모두 나와야 한다.
+    expect(kinds.has(EnemyKind.Biter)).toBe(true)
+    expect(kinds.size).toBeGreaterThan(2)
+  })
+
+  it('스폰 근처에는 적이 없다', () => {
+    // 시작하자마자 둘러싸이면 손쓸 방법이 없다.
+    for (const seed of [1, 2, 3, 77]) {
+      const state = dungeonState(CONFIG, seed)
+      const spawn = cellToWorld(state.maze.spawn)
+      for (const enemy of state.enemies) {
+        expect(Math.hypot(enemy.x - spawn.x, enemy.z - spawn.z)).toBeGreaterThan(CELL * 2)
+      }
+    }
+  })
+
+  it('같은 시드는 같은 적 배치를 만든다', () => {
+    const a = dungeonState(CONFIG, 555).enemies.map((e) => `${e.kind}:${e.x.toFixed(2)}:${e.z.toFixed(2)}`)
+    const b = dungeonState(CONFIG, 555).enemies.map((e) => `${e.kind}:${e.x.toFixed(2)}:${e.z.toFixed(2)}`)
+    expect(a).toEqual(b)
+  })
+
+  it('가까이 가면 쫓아온다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    const enemy = makeEnemy(EnemyKind.Biter, player.x, player.z + 5)
+    state.enemies = [enemy]
+    const before = Math.hypot(enemy.x - player.x, enemy.z - player.z)
+
+    for (let i = 0; i < 10; i++) stepGame(state, new Map([[1, input(0, 0, i + 1)]]))
+    expect(Math.hypot(enemy.x - player.x, enemy.z - player.z)).toBeLessThan(before)
+  })
+
+  it('근접 적은 붙으면 피해를 준다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    state.enemies = [makeEnemy(EnemyKind.Biter, player.x, player.z + 1.2)]
+
+    for (let i = 0; i < 40 && player.hp === PLAYER_MAX_HP; i++) {
+      stepGame(state, new Map([[1, input(0, 0, i + 1)]]))
+    }
+    expect(player.hp).toBeLessThan(PLAYER_MAX_HP)
+  })
+
+  it('원거리 적은 투사체를 쏜다', () => {
+    const state = dungeonState(CONFIG, 31)
+    const player = state.players.get(1)!
+    state.enemies = [makeEnemy(EnemyKind.Caster, player.x, player.z + CELL * 2)]
+
+    let fired = false
+    for (let i = 0; i < 80 && !fired; i++) {
+      stepGame(state, new Map([[1, input(0, 0, i + 1)]]))
+      if (state.projectiles.length > 0) fired = true
+    }
+    expect(fired).toBe(true)
+  })
+
+  it('투사체는 시간이 지나면 사라진다', () => {
+    const state = dungeonState(CONFIG, 31)
+    state.projectiles = [
+      { id: 1, x: state.players.get(1)!.x, z: state.players.get(1)!.z + 40, vx: 0, vz: 0, ttl: 0.1, damage: 5 },
+    ]
+    for (let i = 0; i < 10; i++) stepGame(state, new Map())
+    expect(state.projectiles).toHaveLength(0)
+  })
+
+  it('로비에는 적이 없다', () => {
+    const state = createRunState(CONFIG, 1)
+    addPlayer(state, 1, 'A')
+    for (let i = 0; i < 20; i++) stepGame(state, new Map([[1, input(0, 0, i + 1)]]))
+    expect(state.enemies).toHaveLength(0)
+    expect(state.projectiles).toHaveLength(0)
   })
 })

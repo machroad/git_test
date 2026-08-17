@@ -87,10 +87,14 @@ export interface InputMsg {
   dz: number
   yaw: number
   interact: boolean
+  sprint: boolean
+  attack: boolean
 }
 
 const INPUT_BYTES = 1 + 4 + 1 + 1 + 2 + 1
 const FLAG_INTERACT = 1
+const FLAG_SPRINT = 2
+const FLAG_ATTACK = 4
 
 export function encodeInput(msg: InputMsg): Uint8Array {
   const buf = new ArrayBuffer(INPUT_BYTES)
@@ -100,7 +104,12 @@ export function encodeInput(msg: InputMsg): Uint8Array {
   view.setInt8(5, clamp(Math.round(msg.dx * 100), -100, 100))
   view.setInt8(6, clamp(Math.round(msg.dz * 100), -100, 100))
   view.setInt16(7, clamp(Math.round(wrapAngle(msg.yaw) * 5000), -32768, 32767))
-  view.setUint8(9, msg.interact ? FLAG_INTERACT : 0)
+  view.setUint8(
+    9,
+    (msg.interact ? FLAG_INTERACT : 0) |
+      (msg.sprint ? FLAG_SPRINT : 0) |
+      (msg.attack ? FLAG_ATTACK : 0),
+  )
   return new Uint8Array(buf)
 }
 
@@ -112,6 +121,8 @@ export function decodeInput(data: Uint8Array): InputMsg {
     dz: view.getInt8(6) / 100,
     yaw: view.getInt16(7) / 5000,
     interact: (view.getUint8(9) & FLAG_INTERACT) !== 0,
+    sprint: (view.getUint8(9) & FLAG_SPRINT) !== 0,
+    attack: (view.getUint8(9) & FLAG_ATTACK) !== 0,
   }
 }
 
@@ -128,6 +139,31 @@ export interface SnapshotPlayer {
   lastInputTick: number
   gold: number
   inventory: number
+  /** 0~255 로 눌러 담은 체력과 스태미나 비율. 정확한 값이 필요한 건 호스트뿐이다. */
+  hp: number
+  stamina: number
+  /** 경직 / 쓰러짐 / 공격 모션 여부. 렌더링과 HUD 에만 쓴다. */
+  stunned: boolean
+  downed: boolean
+  swinging: boolean
+}
+
+export interface SnapshotEnemy {
+  id: number
+  kind: number
+  x: number
+  z: number
+  yaw: number
+  /** 0~255 로 눌러 담은 체력 비율. */
+  hp: number
+  /** 공격 예비 동작 중인지. 이게 보여야 피할 수 있다. */
+  windup: boolean
+}
+
+export interface SnapshotProjectile {
+  id: number
+  x: number
+  z: number
 }
 
 export interface SnapshotKey {
@@ -145,11 +181,27 @@ export interface SnapshotMsg {
   cleared: boolean
   players: SnapshotPlayer[]
   keys: SnapshotKey[]
+  enemies: SnapshotEnemy[]
+  projectiles: SnapshotProjectile[]
 }
 
 const SNAP_HEADER = 1 + 4 + 2 + 1 + 1
-const SNAP_PLAYER = 1 + 2 + 2 + 2 + 1 + 4 + 2 + 1
+const SNAP_PLAYER = 1 + 2 + 2 + 2 + 1 + 4 + 2 + 1 + 1 + 1
 const SNAP_KEY = 1 + 2 + 2 + 1
+const SNAP_ENEMY = 1 + 1 + 2 + 2 + 2 + 1 + 1
+const SNAP_PROJECTILE = 1 + 2 + 2
+
+const FLAG_STUNNED = 2
+const FLAG_DOWNED = 4
+const FLAG_SWINGING = 8
+
+/**
+ * 적과 투사체는 개수가 많아서 스팀 Unreliable 상한(1200바이트)에 걸릴 수 있다.
+ * 넘칠 바에는 잘라 보내는 게 낫다 — 패킷이 통째로 실패하면 아무것도 안 보인다.
+ * 잘릴 때는 플레이어에게 가까운 것부터 남긴다.
+ */
+export const MAX_SNAPSHOT_ENEMIES = 48
+export const MAX_SNAPSHOT_PROJECTILES = 24
 
 const FLAG_EXIT_OPEN = 1
 const FLAG_CLEARED = 2
@@ -157,7 +209,17 @@ const FLAG_ESCAPED = 1
 const FLAG_COLLECTED = 1
 
 export function encodeSnapshot(msg: SnapshotMsg): Uint8Array {
-  const size = SNAP_HEADER + msg.players.length * SNAP_PLAYER + 1 + msg.keys.length * SNAP_KEY
+  const enemies = msg.enemies.slice(0, MAX_SNAPSHOT_ENEMIES)
+  const projectiles = msg.projectiles.slice(0, MAX_SNAPSHOT_PROJECTILES)
+  const size =
+    SNAP_HEADER +
+    msg.players.length * SNAP_PLAYER +
+    1 +
+    msg.keys.length * SNAP_KEY +
+    1 +
+    enemies.length * SNAP_ENEMY +
+    1 +
+    projectiles.length * SNAP_PROJECTILE
   const buf = new ArrayBuffer(size)
   const view = new DataView(buf)
 
@@ -174,10 +236,18 @@ export function encodeSnapshot(msg: SnapshotMsg): Uint8Array {
     view.setInt16(o, coordToInt(p.x)); o += 2
     view.setInt16(o, coordToInt(p.z)); o += 2
     view.setInt16(o, clamp(Math.round(wrapAngle(p.yaw) * 5000), -32768, 32767)); o += 2
-    view.setUint8(o, p.escaped ? FLAG_ESCAPED : 0); o += 1
+    view.setUint8(
+      o,
+      (p.escaped ? FLAG_ESCAPED : 0) |
+        (p.stunned ? FLAG_STUNNED : 0) |
+        (p.downed ? FLAG_DOWNED : 0) |
+        (p.swinging ? FLAG_SWINGING : 0),
+    ); o += 1
     view.setUint32(o, p.lastInputTick >>> 0); o += 4
     view.setUint16(o, clamp(Math.round(p.gold), 0, 65535)); o += 2
     view.setUint8(o, p.inventory & 0xff); o += 1
+    view.setUint8(o, clamp(Math.round(p.hp), 0, 255)); o += 1
+    view.setUint8(o, clamp(Math.round(p.stamina), 0, 255)); o += 1
   }
 
   view.setUint8(o, msg.keys.length); o += 1
@@ -186,6 +256,24 @@ export function encodeSnapshot(msg: SnapshotMsg): Uint8Array {
     view.setInt16(o, coordToInt(k.x)); o += 2
     view.setInt16(o, coordToInt(k.z)); o += 2
     view.setUint8(o, k.carrier < 0 ? 255 : k.carrier); o += 1
+  }
+
+  view.setUint8(o, enemies.length); o += 1
+  for (const e of enemies) {
+    view.setUint8(o, e.id & 0xff); o += 1
+    view.setUint8(o, e.kind); o += 1
+    view.setInt16(o, coordToInt(e.x)); o += 2
+    view.setInt16(o, coordToInt(e.z)); o += 2
+    view.setInt16(o, clamp(Math.round(wrapAngle(e.yaw) * 5000), -32768, 32767)); o += 2
+    view.setUint8(o, clamp(Math.round(e.hp), 0, 255)); o += 1
+    view.setUint8(o, e.windup ? 1 : 0); o += 1
+  }
+
+  view.setUint8(o, projectiles.length); o += 1
+  for (const p of projectiles) {
+    view.setUint8(o, p.id & 0xff); o += 1
+    view.setInt16(o, coordToInt(p.x)); o += 2
+    view.setInt16(o, coordToInt(p.z)); o += 2
   }
 
   return new Uint8Array(buf)
@@ -209,6 +297,8 @@ export function decodeSnapshot(data: Uint8Array): SnapshotMsg {
     const lastInputTick = view.getUint32(o); o += 4
     const gold = view.getUint16(o); o += 2
     const inventory = view.getUint8(o); o += 1
+    const hp = view.getUint8(o); o += 1
+    const stamina = view.getUint8(o); o += 1
     players.push({
       id,
       x,
@@ -218,6 +308,11 @@ export function decodeSnapshot(data: Uint8Array): SnapshotMsg {
       lastInputTick,
       gold,
       inventory,
+      hp,
+      stamina,
+      stunned: (pflags & FLAG_STUNNED) !== 0,
+      downed: (pflags & FLAG_DOWNED) !== 0,
+      swinging: (pflags & FLAG_SWINGING) !== 0,
     })
   }
 
@@ -231,6 +326,28 @@ export function decodeSnapshot(data: Uint8Array): SnapshotMsg {
     keys.push({ x, z, collected: (kflags & FLAG_COLLECTED) !== 0, carrier: carrier === 255 ? -1 : carrier })
   }
 
+  const enemyCount = view.getUint8(o); o += 1
+  const enemies: SnapshotEnemy[] = []
+  for (let i = 0; i < enemyCount; i++) {
+    const id = view.getUint8(o); o += 1
+    const kind = view.getUint8(o); o += 1
+    const x = intToCoord(view.getInt16(o)); o += 2
+    const z = intToCoord(view.getInt16(o)); o += 2
+    const yaw = view.getInt16(o) / 5000; o += 2
+    const hp = view.getUint8(o); o += 1
+    const windup = view.getUint8(o) !== 0; o += 1
+    enemies.push({ id, kind, x, z, yaw, hp, windup })
+  }
+
+  const projectileCount = view.getUint8(o); o += 1
+  const projectiles: SnapshotProjectile[] = []
+  for (let i = 0; i < projectileCount; i++) {
+    const id = view.getUint8(o); o += 1
+    const x = intToCoord(view.getInt16(o)); o += 2
+    const z = intToCoord(view.getInt16(o)); o += 2
+    projectiles.push({ id, x, z })
+  }
+
   return {
     tick,
     levelIndex,
@@ -238,18 +355,27 @@ export function decodeSnapshot(data: Uint8Array): SnapshotMsg {
     cleared: (flags & FLAG_CLEARED) !== 0,
     players,
     keys,
+    enemies,
+    projectiles,
   }
 }
 
 // ---------------------------------------------------------------------------
 
-/** 좌표는 cm 단위 고정소수점. 미로 최대 41칸 * 4단위 = 164 이므로 i16 에 넉넉히 들어간다. */
+/**
+ * 좌표 고정소수점 배율. 1 단위를 이 값으로 곱해 i16 에 담는다.
+ *
+ * 50 이면 2cm 정밀도에 ±655 단위까지 담긴다. 미로 최대 41칸 * 8 = 328 단위라
+ * 여유가 있다. 100(1cm)으로 두면 327.67 이 한계라 최대 크기 미로에서 넘친다.
+ */
+export const COORD_SCALE = 50
+
 function coordToInt(v: number): number {
-  return clamp(Math.round(v * 100), -32768, 32767)
+  return clamp(Math.round(v * COORD_SCALE), -32768, 32767)
 }
 
 function intToCoord(v: number): number {
-  return v / 100
+  return v / COORD_SCALE
 }
 
 function clamp(v: number, lo: number, hi: number): number {

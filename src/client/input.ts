@@ -25,6 +25,7 @@ export interface MoveIntent {
 /** 시점 회전을 어떤 방식으로 하고 있는지. HUD 안내 문구를 바꾸는 데 쓴다. */
 export type LookMode = 'pointer-lock' | 'drag'
 
+// 스페이스는 공격이라 페이지 스크롤을 막아야 한다.
 const SCROLL_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'])
 
 /** 마우스 이동 1px 당 회전량(라디안). */
@@ -47,6 +48,7 @@ export class InputController {
 
   /** Pointer Lock 을 시도했다가 거부당했으면 다시 시도하지 않는다. */
   private pointerLockBlocked = false
+  private mouseAttack = false
   private dragging = false
   private dragPointerId: number | null = null
   private lastDragX = 0
@@ -68,6 +70,7 @@ export class InputController {
     }
     const blur = () => {
       this.keys.clear()
+      this.mouseAttack = false
       this.endDrag()
     }
 
@@ -84,7 +87,12 @@ export class InputController {
       if (!this.enabled) return
       if (event.button !== 0) return
       this.tryPointerLock()
-      if (document.pointerLockElement === this.canvas) return
+
+      // Pointer Lock 상태에서는 좌클릭이 공격이다.
+      if (document.pointerLockElement === this.canvas) {
+        this.mouseAttack = true
+        return
+      }
 
       this.dragging = true
       this.dragPointerId = event.pointerId
@@ -106,6 +114,7 @@ export class InputController {
     }
 
     const pointerUp = (event: PointerEvent) => {
+      this.mouseAttack = false
       if (event.pointerId !== this.dragPointerId) return
       this.endDrag()
     }
@@ -150,6 +159,21 @@ export class InputController {
   /** 상호작용 키(F)가 눌려 있는지. 눌린 "순간" 판정은 시뮬레이션 쪽에서 한다. */
   interactHeld(): boolean {
     return this.enabled && this.keys.has('KeyF')
+  }
+
+  /** 달리기(Shift). 누르고 있는 동안 스태미나를 쓴다. */
+  sprintHeld(): boolean {
+    return this.enabled && (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'))
+  }
+
+  /**
+   * 공격. 스페이스 또는 마우스 왼쪽 버튼.
+   * 마우스는 Pointer Lock 이 걸린 상태에서만 쓴다 — 드래그 조작 중일 때는
+   * 왼쪽 버튼이 시점 회전용이라 겹치기 때문이다.
+   */
+  attackHeld(): boolean {
+    if (!this.enabled) return false
+    return this.keys.has('Space') || (this.mouseAttack && this.hasPointerLock())
   }
 
   moveIntent(): MoveIntent {
@@ -199,6 +223,7 @@ export class InputController {
     this.enabled = enabled
     if (!enabled) {
       this.keys.clear()
+      this.mouseAttack = false
       this.endDrag()
       if (document.pointerLockElement === this.canvas) document.exitPointerLock()
     }

@@ -42,6 +42,7 @@ export class Minimap {
     keys: RenderKey[],
     exitOpen: boolean,
     lobby: LobbyMarkers | null = null,
+    enemies: { x: number; z: number; kind: number }[] = [],
   ): void {
     const dpr = window.devicePixelRatio || 1
     const cssWidth = this.canvas.clientWidth
@@ -179,6 +180,18 @@ export class Minimap {
       ctx.fillStyle = 'rgba(255, 218, 70, 0.95)'
       ctx.beginPath()
       ctx.arc(toX(key.x), toY(key.z), Math.max(2, scale * 0.26), 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    // 적. 탐사한 칸에 있는 것만 보여준다. 전체 보기를 켜면 다 보인다.
+    for (const enemy of enemies) {
+      const cellX = Math.floor(enemy.x / CELL)
+      const cellY = Math.floor(enemy.z / CELL)
+      if (!isVisible(cellY * maze.w + cellX)) continue
+      const boss = enemy.kind === 3
+      ctx.fillStyle = boss ? 'rgba(255, 60, 110, 0.95)' : 'rgba(255, 120, 90, 0.8)'
+      ctx.beginPath()
+      ctx.arc(toX(enemy.x), toY(enemy.z), Math.max(1.6, scale * (boss ? 0.3 : 0.18)), 0, Math.PI * 2)
       ctx.fill()
     }
 

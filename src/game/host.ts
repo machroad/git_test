@@ -5,8 +5,10 @@
  * (나중에) Steam P2P 어디에서든 똑같이 동작한다.
  */
 import { MAX_PLAYERS, TICK_MS } from '../shared/constants'
+import { ENEMY_DEFS, PLAYER_MAX_HP, PLAYER_MAX_STAMINA } from '../shared/combat'
 import { DEFAULT_RUN_CONFIG, type RunConfig } from '../shared/config'
 import {
+  MAX_SNAPSHOT_ENEMIES,
   MsgType,
   SNAPSHOT_MAX_BYTES,
   decodeInput,
@@ -121,6 +123,12 @@ export class GameHost {
         lastInputTick: p.lastInputTick,
         gold: p.gold,
         inventory: p.inventory,
+        // 체력과 스태미나는 0~255 비율로 눌러 담는다. 정확한 값은 호스트만 알면 된다.
+        hp: Math.round((p.hp / PLAYER_MAX_HP) * 255),
+        stamina: Math.round((p.stamina / PLAYER_MAX_STAMINA) * 255),
+        stunned: p.stunTimer > 0,
+        downed: p.downTimer > 0,
+        swinging: p.swingTimer > 0,
       })),
       keys: this.state.keys.map((k) => ({
         x: k.x,
@@ -128,6 +136,8 @@ export class GameHost {
         collected: k.collected,
         carrier: k.carrier,
       })),
+      enemies: this.snapshotEnemies(),
+      projectiles: this.state.projectiles.map((p) => ({ id: p.id, x: p.x, z: p.z })),
     }
 
     const encoded = encodeSnapshot(msg)
@@ -204,6 +214,39 @@ export class GameHost {
       default:
         break
     }
+  }
+
+  /**
+   * 적이 많아지면 스냅샷이 상한을 넘는다. 잘라야 할 때는 플레이어에게
+   * 가까운 것부터 남긴다 — 멀리 있는 적은 어차피 안 보인다.
+   */
+  private snapshotEnemies() {
+    const players = [...this.state.players.values()]
+    const distanceToNearestPlayer = (x: number, z: number) => {
+      let best = Infinity
+      for (const player of players) {
+        const d = Math.hypot(player.x - x, player.z - z)
+        if (d < best) best = d
+      }
+      return best
+    }
+
+    const sorted =
+      this.state.enemies.length <= MAX_SNAPSHOT_ENEMIES
+        ? this.state.enemies
+        : [...this.state.enemies].sort(
+            (a, b) => distanceToNearestPlayer(a.x, a.z) - distanceToNearestPlayer(b.x, b.z),
+          )
+
+    return sorted.slice(0, MAX_SNAPSHOT_ENEMIES).map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      x: e.x,
+      z: e.z,
+      yaw: e.yaw,
+      hp: Math.round((e.hp / ENEMY_DEFS[e.kind].maxHp) * 255),
+      windup: e.windup > 0,
+    }))
   }
 
   private zoneMessage(): ZoneMsg {

@@ -40,6 +40,9 @@ export class GameView {
   private crosshairEl: HTMLElement
   private goldEl: HTMLElement
   private shopEl: HTMLElement
+  private barsEl: HTMLElement
+  private hpFillEl: HTMLElement
+  private staminaFillEl: HTMLElement
   private modeButtons: Record<ViewMode, HTMLButtonElement>
   private itemRows: { row: HTMLElement; button: HTMLButtonElement; itemId: number }[] = []
   private active = false
@@ -56,6 +59,9 @@ export class GameView {
     this.crosshairEl = dom.crosshairEl
     this.goldEl = dom.goldEl
     this.shopEl = dom.shopEl
+    this.barsEl = dom.barsEl
+    this.hpFillEl = dom.hpFillEl
+    this.staminaFillEl = dom.staminaFillEl
     this.modeButtons = dom.modeButtons
     this.itemRows = dom.itemRows
 
@@ -108,7 +114,14 @@ export class GameView {
     const intent = this.input.moveIntent()
     const direction = this.camera.toWorldDirection(intent.forward, intent.strafe)
     // 전송과 예측은 update() 안의 고정 스텝에서 함께 일어난다.
-    this.state.setInput(direction.dx, direction.dz, this.camera.yaw, this.input.interactHeld())
+    this.state.setInput(
+      direction.dx,
+      direction.dz,
+      this.camera.yaw,
+      this.input.interactHeld(),
+      this.input.sprintHeld(),
+      this.input.attackHeld(),
+    )
 
     this.state.update(dt)
 
@@ -128,6 +141,9 @@ export class GameView {
 
     this.scene.setLobbyMarkers(shopPos, entrancePos)
     this.scene.syncPlayers(players)
+    const enemies = this.state.renderEnemies()
+    this.scene.syncEnemies(enemies)
+    this.scene.syncProjectiles(this.state.renderProjectiles())
     this.scene.syncKeys(keys, this.state.exitOpen, dt)
     if (local) {
       this.scene.setLocalBodyVisible(local.id, this.camera.mode === 'third' && !local.escaped)
@@ -144,6 +160,7 @@ export class GameView {
       keys,
       this.state.exitOpen,
       shopPos && entrancePos ? { shop: shopPos, entrance: entrancePos } : null,
+      enemies,
     )
     this.updateShop(local, shopPos)
     this.updateHud(players.length, local, keys, entrancePos)
@@ -197,12 +214,23 @@ export class GameView {
     }
     this.goldEl.textContent = `${this.state.gold} G`
 
+    // 체력 · 스태미나 게이지. 폭만 바꾸면 되므로 매 프레임 갱신해도 부담이 없다.
+    this.hpFillEl.style.width = `${Math.max(0, Math.min(1, this.state.hpRatio)) * 100}%`
+    this.staminaFillEl.style.width = `${Math.max(0, Math.min(1, this.state.staminaRatio)) * 100}%`
+    // 경직 중에는 스태미나 바를 붉게 해서 왜 안 움직이는지 알려준다.
+    this.staminaFillEl.classList.toggle('is-exhausted', this.state.stunned)
+    this.barsEl.classList.toggle('is-downed', this.state.downed)
+
     const localPos = this.state.renderPosition()
     const nearEntrance =
       !!entrancePos &&
       Math.hypot(localPos.x - entrancePos.x, localPos.z - entrancePos.z) <= INTERACT_R
 
-    if (this.state.cleared) {
+    if (this.state.downed) {
+      this.centerEl.textContent = '쓰러졌다 — 잠시 후 부활합니다'
+    } else if (this.state.stunned) {
+      this.centerEl.textContent = '지쳤다! 숨을 고르는 중...'
+    } else if (this.state.cleared) {
       this.centerEl.textContent = '전원 탈출! 잠시 후 이동합니다...'
     } else if (escaped) {
       this.centerEl.textContent = '탈출 완료 — 남은 팀원을 기다리는 중'
@@ -215,9 +243,11 @@ export class GameView {
     } else if (this.input.hasPointerLock()) {
       this.centerEl.textContent = ''
     } else if (this.input.canUsePointerLock()) {
-      this.centerEl.textContent = '클릭하면 마우스로 시점을 돌립니다 · WASD 이동 · V 시점 전환'
+      this.centerEl.textContent =
+        '클릭하면 마우스로 시점을 돌립니다 · WASD 이동 · Shift 달리기 · Space 공격'
     } else {
-      this.centerEl.textContent = '드래그해서 시점 회전 · WASD 이동 · Q/E 좌우 회전 · V 시점 전환'
+      this.centerEl.textContent =
+        '드래그해서 시점 회전 · WASD 이동 · Shift 달리기 · Space 공격 · V 시점 전환'
     }
   }
 }
@@ -231,6 +261,9 @@ interface ViewDom {
   crosshairEl: HTMLElement
   goldEl: HTMLElement
   shopEl: HTMLElement
+  barsEl: HTMLElement
+  hpFillEl: HTMLElement
+  staminaFillEl: HTMLElement
   modeButtons: Record<ViewMode, HTMLButtonElement>
   itemRows: { row: HTMLElement; button: HTMLButtonElement; itemId: number }[]
 }
@@ -285,6 +318,22 @@ function buildViewDom(label: string): ViewDom {
   crosshairEl.className = 'hud__crosshair'
   hud.appendChild(crosshairEl)
 
+  // 하단 중앙: 체력 · 스태미나 게이지
+  const barsEl = document.createElement('div')
+  barsEl.className = 'bars'
+  const hpBar = document.createElement('div')
+  hpBar.className = 'bar bar--hp'
+  const hpFillEl = document.createElement('div')
+  hpFillEl.className = 'bar__fill'
+  hpBar.appendChild(hpFillEl)
+  const staminaBar = document.createElement('div')
+  staminaBar.className = 'bar bar--stamina'
+  const staminaFillEl = document.createElement('div')
+  staminaFillEl.className = 'bar__fill'
+  staminaBar.appendChild(staminaFillEl)
+  barsEl.append(hpBar, staminaBar)
+  hud.appendChild(barsEl)
+
   // 상점 패널. 상점 근처에 있을 때만 열린다.
   const shopEl = document.createElement('div')
   shopEl.className = 'shop'
@@ -335,6 +384,9 @@ function buildViewDom(label: string): ViewDom {
     crosshairEl,
     goldEl,
     shopEl,
+    barsEl,
+    hpFillEl,
+    staminaFillEl,
     modeButtons: { first: firstButton, third: thirdButton },
     itemRows,
   }
