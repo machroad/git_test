@@ -19,14 +19,20 @@ const errors = []
 page.on('pageerror', e => errors.push(String(e)))
 page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
 await page.goto('http://localhost:4175/', { waitUntil: 'load' })
+
+// 이제 설정 화면이 먼저 뜬다. 기본값 그대로 시작한다.
+await page.waitForSelector('.setup__panel', { timeout: 30000 })
+await page.click('[data-action="start"]')
+
 await page.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, { timeout: 30000 })
 await page.waitForFunction(() => (window.__game?.views?.[0]?.state?.renderPlayers()?.length ?? 0) > 0, null, { timeout: 30000 })
 await page.keyboard.down('w'); await page.waitForTimeout(900); await page.keyboard.up('w')
 const info = await page.evaluate(() => ({
   playerId: window.__game.views[0].state.playerId,
+  zone: window.__game.views[0].state.zone,
   maze: window.__game.views[0].state.maze.w,
   players: window.__game.views[0].state.renderPlayers().length,
-  explored: window.__game.views[0].state.explored.size,
+  gold: window.__game.views[0].state.gold,
 }))
 await page.screenshot({ path: '/home/user/git_test/screenshots/04-artifact.png' })
 console.log('artifact 단일 파일 실행:', JSON.stringify(info))

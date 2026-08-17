@@ -6,6 +6,13 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { TICK_DT } from '../src/shared/constants'
+import type { RunConfig } from '../src/shared/config'
+import { LOBBY_ENTRANCE_CELL } from '../src/shared/sim'
+import { cellToWorld } from '../src/shared/maze'
+
+const TEST_CONFIG: RunConfig = {
+  levels: [{ width: 15, height: 15, roomCount: 2, keyCount: 2 }],
+}
 import { GameHost } from '../src/game/host'
 import { GameClientState } from '../src/game/client-state'
 import { InProcessHub } from '../src/net/in-process'
@@ -21,7 +28,7 @@ afterEach(() => {
 
 function makeRoom(clientCount: number, net = { latencyMs: 0, jitterMs: 0, loss: 0 }) {
   const hub = new InProcessHub(net)
-  const host = new GameHost(hub.createHostTransport(), { seed: 777 })
+  const host = new GameHost(hub.createHostTransport(), { seed: 777, config: TEST_CONFIG })
   host.start()
 
   const clients = Array.from({ length: clientCount }, () => new GameClientState(hub.createClientTransport()))
@@ -53,7 +60,41 @@ describe('네트코드', () => {
     expect(clients[0].connected).toBe(true)
     expect(clients[0].playerId).toBe(1)
     expect(clients[0].maze).not.toBeNull()
-    expect(clients[0].maze!.w).toBe(15)
+    // 처음에는 로비다.
+    expect(clients[0].zone).toBe('lobby')
+  })
+
+  it('호스트의 런 설정을 그대로 받는다', async () => {
+    const { clients } = makeRoom(1)
+    await wait(150)
+    expect(clients[0].config.levels[0]).toEqual(TEST_CONFIG.levels[0])
+  })
+
+  it('던전에 들어가면 설정대로 미로가 만들어지고 모두가 같은 것을 본다', async () => {
+    const { host, clients } = makeRoom(2)
+    await wait(200)
+
+    // 호스트 쪽에서 플레이어를 입구로 옮기고 F 입력을 흘려보낸다.
+    const entrance = cellToWorld(LOBBY_ENTRANCE_CELL)
+    for (const player of host.state.players.values()) {
+      player.x = entrance.x
+      player.z = entrance.z
+    }
+    clients[0].setInput(0, 0, 0, true)
+    for (let i = 0; i < 4; i++) {
+      clients[0].update(TICK_DT)
+      await wait(60)
+    }
+    clients[0].setInput(0, 0, 0, false)
+    await wait(250)
+
+    expect(host.state.zone).toBe('dungeon')
+    for (const client of clients) {
+      expect(client.zone).toBe('dungeon')
+      expect(client.maze!.w).toBe(15)
+      expect(client.maze!.keys).toHaveLength(2)
+    }
+    expect(Array.from(clients[0].maze!.cells)).toEqual(Array.from(clients[1].maze!.cells))
   })
 
   it('모든 클라이언트가 시드로부터 같은 미로를 만든다', async () => {
@@ -62,6 +103,7 @@ describe('네트코드', () => {
     await wait(200)
 
     const [a, b, c] = clients.map((client) => Array.from(client.maze!.cells))
+    expect(a.length).toBeGreaterThan(0)
     expect(b).toEqual(a)
     expect(c).toEqual(a)
   })

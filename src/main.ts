@@ -6,12 +6,15 @@
  *
  * 쿼리 파라미터:
  *   ?views=1|2|4   같은 페이지에 클라이언트를 몇 개 띄울지 (기본 1)
+ *   ?skipSetup=1   설정 화면을 건너뛰고 저장된 설정으로 바로 시작 (테스트용)
  *   ?ws=ws://호스트:포트   인프로세스 대신 실제 WebSocket 호스트에 붙는다
  *   ?lat=120&jitter=20&loss=0.05   인프로세스 전송에 주입할 네트워크 조건
  */
 import './style.css'
 import { installBrowserCompat } from './client/compat'
 import { debugSettings } from './client/debug-settings'
+import { loadStoredConfig, showSetupScreen } from './client/setup-screen'
+import type { RunConfig } from './shared/config'
 import { GameHost } from './game/host'
 import { InProcessHub } from './net/in-process'
 import { connectWebSocket } from './net/websocket'
@@ -25,6 +28,7 @@ declare global {
       views: GameView[]
       host: () => GameHost | null
       hub: () => InProcessHub | null
+      config: () => RunConfig
     }
   }
 }
@@ -33,8 +37,11 @@ declare global {
 installBrowserCompat()
 
 const params = new URLSearchParams(location.search)
-const viewCount = clampViews(Number(params.get('views') ?? '1'))
 const wsUrl = params.get('ws')
+const skipSetup = params.get('skipSetup') === '1' || wsUrl !== null
+
+let viewCount = clampViews(Number(params.get('views') ?? '1'))
+let runConfig: RunConfig = loadStoredConfig()
 
 const appRoot = document.getElementById('app')
 if (!appRoot) throw new Error('#app 을 찾을 수 없습니다.')
@@ -50,6 +57,7 @@ let debugOutputs: {
   fps: HTMLOutputElement
   maze: HTMLOutputElement
   rooms: HTMLOutputElement
+  keys: HTMLOutputElement
 } | null = null
 let debugStack: HTMLElement | null = null
 
@@ -63,6 +71,14 @@ boot().catch((error) => {
 })
 
 async function boot() {
+  // 설정 화면에서 레벨 구성과 테스트 화면 수를 정한 뒤에 호스트를 만든다.
+  // WebSocket 으로 붙을 때는 설정을 호스트가 들고 있으므로 건너뛴다.
+  if (!skipSetup) {
+    const result = await showSetupScreen(viewCount)
+    runConfig = result.config
+    viewCount = result.viewCount
+  }
+
   const stage = document.createElement('div')
   stage.className = `stage stage--${viewCount}`
   app.appendChild(stage)
@@ -74,7 +90,7 @@ async function boot() {
   }
 
   if (views.length > 0) focusView(views[0])
-  window.__game = { views, host: () => host, hub: () => hub }
+  window.__game = { views, host: () => host, hub: () => hub, config: () => runConfig }
   startRenderLoop()
   window.addEventListener('resize', () => {
     for (const view of views) view.resize()
@@ -88,7 +104,7 @@ function bootInProcess(stage: HTMLElement) {
     loss: Number(params.get('loss') ?? '0'),
   })
 
-  host = new GameHost(hub.createHostTransport(), { seed: randomSeed() })
+  host = new GameHost(hub.createHostTransport(), { seed: randomSeed(), config: runConfig })
   host.start()
 
   for (let i = 0; i < viewCount; i++) {
@@ -140,19 +156,23 @@ function startRenderLoop() {
   let fpsFrames = 0
 
   const frame = (now: number) => {
+    const elapsed = (now - last) / 1000
     // 탭이 백그라운드에 있다가 돌아오면 dt 가 몇 초씩 튄다. 상한을 둔다.
-    const dt = Math.min(0.1, (now - last) / 1000)
+    const dt = Math.min(0.1, elapsed)
     last = now
     for (const view of views) view.frame(dt)
 
     // FPS 는 매 프레임 갱신하면 숫자가 튀어서 읽을 수가 없다. 0.5초씩 모아서 평균낸다.
-    fpsAccum += dt
+    // 클램프된 dt 가 아니라 실제 경과 시간으로 재야 한다. 프레임이 느릴 때
+    // 클램프값을 쓰면 실제보다 높은 FPS 가 나온다.
+    fpsAccum += elapsed
     fpsFrames++
     if (debugOutputs && fpsAccum >= 0.5) {
       debugOutputs.fps.textContent = String(Math.round(fpsFrames / fpsAccum))
       const maze = views[0]?.state.maze
       debugOutputs.maze.textContent = maze ? `${maze.w}x${maze.h}` : '-'
       debugOutputs.rooms.textContent = maze ? String(maze.rooms.length) : '-'
+      debugOutputs.keys.textContent = maze ? String(maze.keys.length) : '-'
       fpsAccum = 0
       fpsFrames = 0
     }
@@ -244,6 +264,7 @@ function buildDebugToolsPanel() {
       <span>FPS <output data-out="fps">-</output></span>
       <span>미로 <output data-out="maze">-</output></span>
       <span>방 <output data-out="rooms">-</output></span>
+      <span>열쇠 <output data-out="keys">-</output></span>
     </div>
   `
   panelStack().appendChild(panel)
@@ -276,6 +297,7 @@ function buildDebugToolsPanel() {
     fps: panel.querySelector('[data-out="fps"]') as HTMLOutputElement,
     maze: panel.querySelector('[data-out="maze"]') as HTMLOutputElement,
     rooms: panel.querySelector('[data-out="rooms"]') as HTMLOutputElement,
+    keys: panel.querySelector('[data-out="keys"]') as HTMLOutputElement,
   }
   syncChecks()
 }

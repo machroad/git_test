@@ -82,7 +82,17 @@ export function worldToCell(maze: Pick<Maze, 'w' | 'h'>, x: number, z: number): 
  * 허물어 순환로를 만든다. 완전미로는 막다른 길이 너무 많아 협동 플레이에서
  * 서로 엇갈리기만 하고 재미가 떨어진다.
  */
-export function generateMaze(w: number, h: number, seed: number, braid = 0.08): Maze {
+export interface MazeOptions {
+  /** 뚫을 사각형 방 개수. 생략하면 크기에 맞춰 자동으로 정한다. */
+  roomCount?: number
+  /** 배치할 열쇠 개수. */
+  keyCount?: number
+  /** 막다른 길을 허물어 순환로를 만드는 비율. */
+  braid?: number
+}
+
+export function generateMaze(w: number, h: number, seed: number, options: MazeOptions = {}): Maze {
+  const braid = options.braid ?? 0.08
   const rng = mulberry32(seed)
   const cells = new Uint8Array(w * h).fill(ALL_WALLS)
   const visited = new Uint8Array(w * h)
@@ -129,8 +139,45 @@ export function generateMaze(w: number, h: number, seed: number, braid = 0.08): 
     rooms: [],
   }
 
-  carveRooms(maze, rng)
-  placeLandmarks(maze, rng)
+  carveRooms(maze, rng, options.roomCount ?? roomCountForSize(Math.min(w, h)))
+  placeLandmarks(maze, rng, Math.max(1, options.keyCount ?? 1))
+  return maze
+}
+
+/**
+ * 로비(일반 방). 미로가 아니라 벽 없는 사각형 공간 하나다.
+ *
+ * Maze 구조를 그대로 재사용하는 게 핵심이다. 충돌, 렌더링, 미니맵, 카메라의
+ * 벽 회피가 전부 Maze 를 기준으로 돌기 때문에, 로비를 별도 타입으로 만들면
+ * 그 코드를 전부 두 벌로 관리해야 한다.
+ */
+export function createLobbyMaze(size = 9): Maze {
+  const cells = new Uint8Array(size * size).fill(ALL_WALLS)
+  const maze: Maze = {
+    w: size,
+    h: size,
+    seed: 0,
+    cells,
+    spawn: { x: (size / 2) | 0, y: (size / 2) | 0 },
+    exit: { x: (size / 2) | 0, y: 1 },
+    keys: [],
+    rooms: [{ x: 0, y: 0, w: size, h: size }],
+  }
+
+  // 내부 벽만 전부 없앤다. 바깥 경계는 그대로 둬야 밖으로 못 나간다.
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (x + 1 < size) {
+        cells[cellIndex(maze, x, y)] &= ~E
+        cells[cellIndex(maze, x + 1, y)] &= ~W
+      }
+      if (y + 1 < size) {
+        cells[cellIndex(maze, x, y)] &= ~S
+        cells[cellIndex(maze, x, y + 1)] &= ~N
+      }
+    }
+  }
+
   return maze
 }
 
@@ -147,8 +194,8 @@ export function roomCountForSize(size: number): number {
  *
  * 벽을 없애기만 하므로 미로의 연결성은 그대로 유지된다 (새 벽을 세우지 않는다).
  */
-function carveRooms(maze: Maze, rng: Rng): void {
-  const target = roomCountForSize(Math.min(maze.w, maze.h))
+function carveRooms(maze: Maze, rng: Rng, target: number): void {
+  if (target <= 0) return
   const maxRoom = Math.max(3, Math.min(5, Math.floor(maze.w / 4)))
 
   let attempts = 0
@@ -231,34 +278,77 @@ function braidMaze(rng: Rng, maze: { w: number; h: number; cells: Uint8Array }, 
 /**
  * 스폰 / 탈출구 / 열쇠 위치를 정한다.
  *
- * 탈출구는 스폰에서 가장 먼 곳, 열쇠는 (스폰 거리 + 탈출구 거리) 가 최대인 곳에 둔다.
- * 그래야 "열쇠 찾으러 갔다가 탈출구로 돌아온다"는 동선이 만들어진다.
+ * 그냥 "점수 높은 순"으로 뽑으면 열쇠들이 한 곳에 뭉치고, 탈출구 바로 옆에
+ * 놓이기도 한다. 그러면 미로를 돌아다닐 이유가 사라진다. 그래서 최소 거리 조건을 건다.
+ *
+ *  - 스폰에서 충분히 멀 것 (시작하자마자 줍는 걸 막는다)
+ *  - 탈출구에서 충분히 멀 것 (열쇠 먹고 바로 나가는 걸 막는다)
+ *  - 열쇠끼리 충분히 멀 것 (한 번에 다 줍는 걸 막는다)
+ *
+ * 거리는 미로 지름에 비례한 값으로 잡는다. 절대값으로 잡으면 작은 미로에서
+ * 조건을 만족하는 칸이 아예 없어진다. 그래도 못 채우면 조건을 조금씩 완화하며
+ * 다시 시도하고, 끝내 안 되면 점수 순으로 채운다 — 열쇠가 부족한 채로 두면
+ * 탈출구가 영영 안 열려서 게임이 진행 불가가 되기 때문이다.
  */
-function placeLandmarks(maze: Maze, rng: Rng) {
+const KEY_MIN_FROM_SPAWN = 0.4
+const KEY_MIN_FROM_EXIT = 0.3
+const KEY_MIN_BETWEEN = 0.3
+
+function placeLandmarks(maze: Maze, rng: Rng, keyCount: number) {
   const spawn = { x: 0, y: 0 }
   maze.spawn = spawn
 
   const fromSpawn = bfsDistances(maze, spawn)
   maze.exit = farthestCell(maze, fromSpawn)
-
   const fromExit = bfsDistances(maze, maze.exit)
-  let best: Cell = { x: 0, y: 0 }
-  let bestScore = -1
-  for (let y = 0; y < maze.h; y++) {
-    for (let x = 0; x < maze.w; x++) {
-      const i = y * maze.w + x
-      if (fromSpawn[i] < 0 || fromExit[i] < 0) continue
-      if (x === spawn.x && y === spawn.y) continue
-      if (x === maze.exit.x && y === maze.exit.y) continue
-      // 동점일 때 항상 같은 셀이 뽑히면 지루하므로 시드 난수로 살짝 흔든다.
-      const score = fromSpawn[i] + fromExit[i] + rng() * 0.5
-      if (score > bestScore) {
-        bestScore = score
-        best = { x, y }
-      }
+
+  let maxDist = 0
+  for (const d of fromSpawn) if (d > maxDist) maxDist = d
+
+  // 동점일 때 항상 같은 칸이 뽑히면 지루하므로 시드 난수로 살짝 흔든다.
+  // 정렬 전에 한 번만 만들어야 결정론이 유지된다.
+  const jitter = new Float64Array(maze.w * maze.h)
+  for (let i = 0; i < jitter.length; i++) jitter[i] = rng() * 0.5
+
+  const candidates: number[] = []
+  for (let i = 0; i < fromSpawn.length; i++) {
+    if (fromSpawn[i] < 0 || fromExit[i] < 0) continue
+    const x = i % maze.w
+    const y = (i / maze.w) | 0
+    if (x === spawn.x && y === spawn.y) continue
+    if (x === maze.exit.x && y === maze.exit.y) continue
+    candidates.push(i)
+  }
+  const score = (i: number) => fromSpawn[i] + fromExit[i] + jitter[i]
+  candidates.sort((a, b) => score(b) - score(a))
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const relax = Math.pow(0.75, attempt)
+    const minSpawn = maxDist * KEY_MIN_FROM_SPAWN * relax
+    const minExit = maxDist * KEY_MIN_FROM_EXIT * relax
+    const minBetween = maxDist * KEY_MIN_BETWEEN * relax
+
+    const chosen: number[] = []
+    const chosenDists: Int32Array[] = []
+    for (const i of candidates) {
+      if (chosen.length >= keyCount) break
+      if (fromSpawn[i] < minSpawn) continue
+      if (fromExit[i] < minExit) continue
+      if (chosenDists.some((d) => d[i] >= 0 && d[i] < minBetween)) continue
+      chosen.push(i)
+      chosenDists.push(bfsDistances(maze, { x: i % maze.w, y: (i / maze.w) | 0 }))
+    }
+
+    if (chosen.length === keyCount) {
+      maze.keys = chosen.map((i) => ({ x: i % maze.w, y: (i / maze.w) | 0 }))
+      return
     }
   }
-  maze.keys = [best]
+
+  // 조건을 다 풀어도 못 채우면(아주 작은 미로) 점수 순으로 채운다.
+  maze.keys = candidates
+    .slice(0, keyCount)
+    .map((i) => ({ x: i % maze.w, y: (i / maze.w) | 0 }))
 }
 
 /** 미로 그래프상의 BFS 거리. 도달 불가 셀은 -1. */

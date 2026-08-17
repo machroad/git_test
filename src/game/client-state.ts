@@ -16,8 +16,9 @@ import {
   RECONCILE_SNAP_DIST,
   TICK_DT,
 } from '../shared/constants'
-import { cellToWorld, generateMaze, worldToCell, type Maze } from '../shared/maze'
-import { mazeSizeForLevel } from '../shared/constants'
+import { cellToWorld, createLobbyMaze, worldToCell, type Maze } from '../shared/maze'
+import { DEFAULT_RUN_CONFIG, type RunConfig } from '../shared/config'
+import { revealRadiusFor } from '../shared/items'
 import {
   MsgType,
   decodeJson,
@@ -26,12 +27,12 @@ import {
   encodeJson,
   messageType,
   wrapAngle,
-  type LevelMsg,
   type RosterMsg,
   type SnapshotMsg,
   type WelcomeMsg,
+  type ZoneMsg,
 } from '../shared/protocol'
-import { movePlayer, type PlayerInput } from '../shared/sim'
+import { createDungeonMaze, movePlayer, type PlayerInput, type Zone } from '../shared/sim'
 import type { ClientTransport } from '../net/transport'
 
 export interface RenderPlayer {
@@ -42,6 +43,8 @@ export interface RenderPlayer {
   yaw: number
   escaped: boolean
   isLocal: boolean
+  gold: number
+  inventory: number
 }
 
 export interface RenderKey {
@@ -58,12 +61,18 @@ interface TimedSnapshot {
 
 export class GameClientState {
   playerId = -1
-  level = 1
   seed = 1
+  config: RunConfig = DEFAULT_RUN_CONFIG
+  zone: Zone = 'lobby'
+  /** 로비는 -1. 던전이면 몇 번째 레벨인지. */
+  levelIndex = -1
   maze: Maze | null = null
   exitOpen = false
   cleared = false
   connected = false
+  /** 내 골드와 아이템. 스냅샷에서 갱신된다. */
+  gold = 0
+  inventory = 0
 
   /** 마지막 고정 스텝에서의 로컬 예측 위치. 호스트 권위 위치와 직접 비교되는 값이다. */
   readonly predicted = { x: 0, z: 0 }
@@ -82,7 +91,7 @@ export class GameClientState {
   private inputTick = 0
   private hasAuthoritativePosition = false
   private stepAccumulator = 0
-  private desiredInput = { dx: 0, dz: 0, yaw: 0 }
+  private desiredInput = { dx: 0, dz: 0, yaw: 0, interact: false }
   private localEscaped = false
   private onLevelChanged?: (maze: Maze) => void
 
@@ -109,12 +118,13 @@ export class GameClientState {
         const msg = decodeJson<WelcomeMsg>(data)
         this.playerId = msg.playerId
         this.connected = true
-        this.loadLevel(msg.level, msg.seed)
+        this.seed = msg.seed
+        this.config = msg.config
+        this.loadZone(msg.zone)
         break
       }
-      case MsgType.Level: {
-        const msg = decodeJson<LevelMsg>(data)
-        this.loadLevel(msg.level, msg.seed)
+      case MsgType.Zone: {
+        this.loadZone(decodeJson<ZoneMsg>(data))
         break
       }
       case MsgType.Roster: {
@@ -132,12 +142,14 @@ export class GameClientState {
     }
   }
 
-  private loadLevel(level: number, seed: number) {
-    this.level = level
-    this.seed = seed
-    const size = mazeSizeForLevel(level)
-    // 미로는 시드로부터 각자 만든다. 네트워크로 미로를 보낼 필요가 없다.
-    this.maze = generateMaze(size, size, seed)
+  private loadZone(msg: ZoneMsg) {
+    this.zone = msg.zone
+    this.levelIndex = msg.levelIndex
+    // 미로는 설정 + 시드로부터 각자 만든다. 네트워크로 미로를 보낼 필요가 없다.
+    this.maze =
+      msg.zone === 'lobby'
+        ? createLobbyMaze()
+        : createDungeonMaze(this.config, this.seed, msg.levelIndex)
     this.snapshots.length = 0
     this.history.length = 0
     this.explored.clear()
@@ -162,8 +174,8 @@ export class GameClientState {
     // 이때 들어오는 스냅샷을 받아들이면 미로도 없고 내 playerId 도 모르는 채로
     // 상태가 채워져서, 뒤늦게 온 Welcome 과 어긋난다.
     if (!this.maze || this.playerId < 0) return
-    // 레벨 전환 메시지보다 이전 레벨의 스냅샷이 늦게 도착할 수 있다.
-    if (snapshot.level !== this.level) return
+    // 존 전환 메시지보다 이전 존의 스냅샷이 늦게 도착할 수 있다.
+    if (snapshot.levelIndex !== this.levelIndex) return
 
     this.snapshots.push({ recvTime: performance.now(), snapshot })
     // 보간에 필요한 것보다 넉넉히 남기고 버린다.
@@ -175,6 +187,8 @@ export class GameClientState {
     const mine = snapshot.players.find((p) => p.id === this.playerId)
     if (mine) {
       this.localEscaped = mine.escaped
+      this.gold = mine.gold
+      this.inventory = mine.inventory
       this.reconcile(mine.x, mine.z, mine.lastInputTick)
     }
   }
@@ -235,9 +249,14 @@ export class GameClientState {
   // -------------------------------------------------------------------------
 
   /** 매 프레임 현재 조작 의도를 넣어준다. 실제 전송은 고정 스텝에서 일어난다. */
-  setInput(dx: number, dz: number, yaw: number): void {
-    this.desiredInput = { dx, dz, yaw }
+  setInput(dx: number, dz: number, yaw: number, interact = false): void {
+    this.desiredInput = { dx, dz, yaw, interact }
     this.yaw = yaw
+  }
+
+  /** 상점에 구매를 요청한다. 성공 여부는 다음 스냅샷의 골드/인벤토리로 확인된다. */
+  buy(itemId: number): void {
+    this.transport.send(encodeJson(MsgType.Buy, { itemId }), true)
   }
 
   /** 매 프레임 호출. dt 초. */
@@ -284,11 +303,13 @@ export class GameClientState {
       dx: this.desiredInput.dx,
       dz: this.desiredInput.dz,
       yaw: this.desiredInput.yaw,
+      interact: this.desiredInput.interact,
     }
     this.transport.send(encodeInput(input), false)
 
     if (!this.localEscaped && !this.cleared) {
-      movePlayer(this.maze!, this.predicted, input, TICK_DT)
+      // 아이템이 속도를 바꾸므로 예측도 같은 인벤토리로 계산해야 호스트와 어긋나지 않는다.
+      movePlayer(this.maze!, this.predicted, input, TICK_DT, this.inventory)
     }
 
     this.history.push({ tick: this.inputTick, x: this.predicted.x, z: this.predicted.z })
@@ -306,9 +327,17 @@ export class GameClientState {
 
   private markExplored() {
     if (!this.maze) return
+    const radius = revealRadiusFor(this.inventory)
     for (const player of this.renderPlayers()) {
       const cell = worldToCell(this.maze, player.x, player.z)
-      this.explored.add(cell.y * this.maze.w + cell.x)
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const x = cell.x + dx
+          const y = cell.y + dy
+          if (x < 0 || y < 0 || x >= this.maze.w || y >= this.maze.h) continue
+          this.explored.add(y * this.maze.w + x)
+        }
+      }
     }
   }
 
@@ -357,6 +386,8 @@ export class GameClientState {
         yaw: isLocal ? this.yaw : lerpAngle(pa.yaw, pb.yaw, t),
         escaped: pb.escaped,
         isLocal,
+        gold: pb.gold,
+        inventory: pb.inventory,
       }
     })
   }

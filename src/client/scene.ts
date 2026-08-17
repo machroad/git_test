@@ -56,6 +56,8 @@ export class MazeScene {
   private exitMesh: Mesh | null = null
   private exitMaterial: StandardMaterial
   private keyMeshes: Mesh[] = []
+  private shopMesh: Mesh | null = null
+  private entranceMesh: Mesh | null = null
   private keyMaterial: StandardMaterial
   private players = new Map<number, PlayerVisual>()
   private torch: PointLight
@@ -177,6 +179,49 @@ export class MazeScene {
     }
   }
 
+  /**
+   * 로비 시설(상점 / 던전 구멍)을 배치한다. 던전에서는 null 을 넘겨 감춘다.
+   * 미로와 같은 좌표계라 별도 처리가 없다.
+   */
+  setLobbyMarkers(shop: { x: number; z: number } | null, entrance: { x: number; z: number } | null): void {
+    if (shop) {
+      if (!this.shopMesh) {
+        this.shopMesh = CreateBox('shop', { width: 2.6, height: 1.1, depth: 1.2 }, this.scene)
+        const material = new StandardMaterial('shopMat', this.scene)
+        material.diffuseColor = new Color3(0.75, 0.55, 0.25)
+        material.emissiveColor = new Color3(0.28, 0.18, 0.05)
+        material.specularColor = new Color3(0, 0, 0)
+        this.shopMesh.material = material
+        this.shopMesh.isPickable = false
+      }
+      this.shopMesh.position.set(shop.x, 0.55, shop.z)
+      this.shopMesh.setEnabled(true)
+    } else {
+      this.shopMesh?.setEnabled(false)
+    }
+
+    if (entrance) {
+      if (!this.entranceMesh) {
+        // 바닥에 뚫린 구멍처럼 보이도록 어두운 원반을 살짝 띄워 놓는다.
+        this.entranceMesh = CreateCylinder(
+          'entrance',
+          { diameter: 2.8, height: 0.08, tessellation: 28 },
+          this.scene,
+        )
+        const material = new StandardMaterial('entranceMat', this.scene)
+        material.diffuseColor = new Color3(0.02, 0.02, 0.04)
+        material.emissiveColor = new Color3(0.16, 0.05, 0.28)
+        material.specularColor = new Color3(0, 0, 0)
+        this.entranceMesh.material = material
+        this.entranceMesh.isPickable = false
+      }
+      this.entranceMesh.position.set(entrance.x, 0.04, entrance.z)
+      this.entranceMesh.setEnabled(true)
+    } else {
+      this.entranceMesh?.setEnabled(false)
+    }
+  }
+
   syncPlayers(renderPlayers: RenderPlayer[]): void {
     const seen = new Set<number>()
 
@@ -237,9 +282,10 @@ export class MazeScene {
     }
   }
 
-  /** 로컬 플레이어 위치에 손전등을 붙인다. */
-  setTorch(x: number, z: number): void {
+  /** 로컬 플레이어 위치에 손전등을 붙인다. 랜턴 아이템이 있으면 더 멀리 비춘다. */
+  setTorch(x: number, z: number, range: number): void {
     this.torch.position.set(x, EYE_H + 0.3, z)
+    this.torch.range = range
   }
 
   /**

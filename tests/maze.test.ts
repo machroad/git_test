@@ -6,6 +6,7 @@ import {
   W,
   bfsDistances,
   cellIndex,
+  createLobbyMaze,
   generateMaze,
   hasWall,
   roomCountForSize,
@@ -144,5 +145,107 @@ describe('사각형 방', () => {
 
   it('같은 시드는 같은 방 배치를 만든다', () => {
     expect(generateMaze(21, 21, 808).rooms).toEqual(generateMaze(21, 21, 808).rooms)
+  })
+})
+
+describe('열쇠 배치 간격', () => {
+  /** 미로 지름(스폰에서 가장 먼 거리) 대비 비율로 본다. 절대 거리는 크기마다 의미가 달라진다. */
+  function spacing(w: number, h: number, seed: number, keyCount: number) {
+    const maze = generateMaze(w, h, seed, { keyCount })
+    const fromSpawn = bfsDistances(maze, maze.spawn)
+    const fromExit = bfsDistances(maze, maze.exit)
+    let diameter = 0
+    for (const d of fromSpawn) if (d > diameter) diameter = d
+
+    const keyIdx = maze.keys.map((k) => cellIndex(maze, k.x, k.y))
+    const spawnRatios = keyIdx.map((i) => fromSpawn[i] / diameter)
+    const exitRatios = keyIdx.map((i) => fromExit[i] / diameter)
+
+    const betweenRatios: number[] = []
+    for (let i = 0; i < maze.keys.length; i++) {
+      const dist = bfsDistances(maze, maze.keys[i])
+      for (let j = i + 1; j < maze.keys.length; j++) {
+        betweenRatios.push(dist[keyIdx[j]] / diameter)
+      }
+    }
+    return { maze, spawnRatios, exitRatios, betweenRatios }
+  }
+
+  it('요청한 개수만큼 열쇠가 배치된다', () => {
+    // 하나라도 모자라면 탈출구가 영영 안 열려서 진행 불가가 된다.
+    for (const keyCount of [1, 2, 3, 4, 5, 6]) {
+      for (const seed of [1, 42, 777]) {
+        expect(generateMaze(21, 21, seed, { keyCount }).keys).toHaveLength(keyCount)
+      }
+    }
+  })
+
+  it('아주 작은 미로에서도 요청 개수를 채운다', () => {
+    // 조건을 만족하는 칸이 부족하면 완화해서라도 채워야 한다.
+    expect(generateMaze(7, 7, 3, { keyCount: 6 }).keys).toHaveLength(6)
+  })
+
+  it('열쇠가 스폰에서 충분히 떨어져 있다', () => {
+    for (const seed of [1, 7, 99, 12345]) {
+      const { spawnRatios } = spacing(25, 25, seed, 3)
+      for (const ratio of spawnRatios) expect(ratio).toBeGreaterThan(0.3)
+    }
+  })
+
+  it('열쇠가 탈출구에서 충분히 떨어져 있다', () => {
+    // 열쇠 먹고 바로 나가버리면 미로를 도는 의미가 없다.
+    for (const seed of [1, 7, 99, 12345]) {
+      const { exitRatios } = spacing(25, 25, seed, 3)
+      for (const ratio of exitRatios) expect(ratio).toBeGreaterThan(0.2)
+    }
+  })
+
+  it('열쇠끼리도 서로 떨어져 있다', () => {
+    // 한 곳에 뭉쳐 있으면 한 번에 다 줍게 되어 개수를 늘린 의미가 없다.
+    for (const seed of [1, 7, 99, 12345]) {
+      const { betweenRatios } = spacing(25, 25, seed, 3)
+      expect(betweenRatios.length).toBe(3)
+      for (const ratio of betweenRatios) expect(ratio).toBeGreaterThan(0.2)
+    }
+  })
+
+  it('열쇠가 스폰 · 탈출구와 겹치지 않는다', () => {
+    for (const seed of [2, 22, 222]) {
+      const maze = generateMaze(19, 19, seed, { keyCount: 4 })
+      const spots = new Set([`${maze.spawn.x},${maze.spawn.y}`, `${maze.exit.x},${maze.exit.y}`])
+      for (const key of maze.keys) {
+        expect(spots.has(`${key.x},${key.y}`)).toBe(false)
+        spots.add(`${key.x},${key.y}`)
+      }
+      // 열쇠끼리 같은 칸에 겹치지도 않는다.
+      expect(spots.size).toBe(2 + maze.keys.length)
+    }
+  })
+
+  it('방 개수와 열쇠 개수를 옵션으로 지정할 수 있다', () => {
+    const maze = generateMaze(23, 23, 5, { roomCount: 4, keyCount: 5 })
+    expect(maze.rooms).toHaveLength(4)
+    expect(maze.keys).toHaveLength(5)
+    expect(generateMaze(23, 23, 5, { roomCount: 0 }).rooms).toHaveLength(0)
+  })
+})
+
+describe('로비', () => {
+  it('로비에는 내부 벽이 없고 바깥 경계만 막혀 있다', () => {
+    const lobby = createLobbyMaze(9)
+    for (let y = 0; y < lobby.h; y++) {
+      for (let x = 0; x < lobby.w; x++) {
+        if (x + 1 < lobby.w) expect(hasWall(lobby, x, y, E)).toBe(false)
+        if (y + 1 < lobby.h) expect(hasWall(lobby, x, y, S)).toBe(false)
+      }
+    }
+    for (let x = 0; x < lobby.w; x++) {
+      expect(hasWall(lobby, x, 0, N)).toBe(true)
+      expect(hasWall(lobby, x, lobby.h - 1, S)).toBe(true)
+    }
+    for (let y = 0; y < lobby.h; y++) {
+      expect(hasWall(lobby, 0, y, W)).toBe(true)
+      expect(hasWall(lobby, lobby.w - 1, y, E)).toBe(true)
+    }
   })
 })

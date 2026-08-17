@@ -9,15 +9,19 @@
  * 들어와야 하므로 SNAPSHOT_MAX_BYTES 로 검증한다.
  */
 
+import type { RunConfig } from './config'
+import type { Zone } from './sim'
+
 export const SNAPSHOT_MAX_BYTES = 1200
 
 export const MsgType = {
   Join: 1,
   Welcome: 2,
-  Level: 3,
+  Zone: 3,
   Input: 4,
   Snapshot: 5,
   Roster: 6,
+  Buy: 7,
 } as const
 
 export type MsgTypeValue = (typeof MsgType)[keyof typeof MsgType]
@@ -32,15 +36,22 @@ export interface JoinMsg {
 
 export interface WelcomeMsg {
   playerId: number
-  level: number
   seed: number
+  tick: number
+  /** 런 설정 전체. 이게 있어야 클라이언트가 미로를 직접 만들 수 있다. */
+  config: RunConfig
+  zone: ZoneMsg
+}
+
+/** 존/레벨 전환. 미로 데이터가 아니라 "어느 존의 몇 번째 레벨인지"만 보낸다. */
+export interface ZoneMsg {
+  zone: Zone
+  levelIndex: number
   tick: number
 }
 
-export interface LevelMsg {
-  level: number
-  seed: number
-  tick: number
+export interface BuyMsg {
+  itemId: number
 }
 
 export interface RosterMsg {
@@ -75,9 +86,11 @@ export interface InputMsg {
   dx: number
   dz: number
   yaw: number
+  interact: boolean
 }
 
-const INPUT_BYTES = 1 + 4 + 1 + 1 + 2
+const INPUT_BYTES = 1 + 4 + 1 + 1 + 2 + 1
+const FLAG_INTERACT = 1
 
 export function encodeInput(msg: InputMsg): Uint8Array {
   const buf = new ArrayBuffer(INPUT_BYTES)
@@ -87,6 +100,7 @@ export function encodeInput(msg: InputMsg): Uint8Array {
   view.setInt8(5, clamp(Math.round(msg.dx * 100), -100, 100))
   view.setInt8(6, clamp(Math.round(msg.dz * 100), -100, 100))
   view.setInt16(7, clamp(Math.round(wrapAngle(msg.yaw) * 5000), -32768, 32767))
+  view.setUint8(9, msg.interact ? FLAG_INTERACT : 0)
   return new Uint8Array(buf)
 }
 
@@ -97,6 +111,7 @@ export function decodeInput(data: Uint8Array): InputMsg {
     dx: view.getInt8(5) / 100,
     dz: view.getInt8(6) / 100,
     yaw: view.getInt16(7) / 5000,
+    interact: (view.getUint8(9) & FLAG_INTERACT) !== 0,
   }
 }
 
@@ -111,6 +126,8 @@ export interface SnapshotPlayer {
   yaw: number
   escaped: boolean
   lastInputTick: number
+  gold: number
+  inventory: number
 }
 
 export interface SnapshotKey {
@@ -122,7 +139,8 @@ export interface SnapshotKey {
 
 export interface SnapshotMsg {
   tick: number
-  level: number
+  /** 로비는 -1, 던전은 레벨 인덱스. 클라이언트가 자기 존과 맞는지 확인한다. */
+  levelIndex: number
   exitOpen: boolean
   cleared: boolean
   players: SnapshotPlayer[]
@@ -130,7 +148,7 @@ export interface SnapshotMsg {
 }
 
 const SNAP_HEADER = 1 + 4 + 2 + 1 + 1
-const SNAP_PLAYER = 1 + 2 + 2 + 2 + 1 + 4
+const SNAP_PLAYER = 1 + 2 + 2 + 2 + 1 + 4 + 2 + 1
 const SNAP_KEY = 1 + 2 + 2 + 1
 
 const FLAG_EXIT_OPEN = 1
@@ -146,7 +164,8 @@ export function encodeSnapshot(msg: SnapshotMsg): Uint8Array {
   let o = 0
   view.setUint8(o, MsgType.Snapshot); o += 1
   view.setUint32(o, msg.tick >>> 0); o += 4
-  view.setUint16(o, msg.level); o += 2
+  // 로비(-1)를 부호 없는 값으로 옮겨 담는다.
+  view.setUint16(o, msg.levelIndex + 1); o += 2
   view.setUint8(o, (msg.exitOpen ? FLAG_EXIT_OPEN : 0) | (msg.cleared ? FLAG_CLEARED : 0)); o += 1
   view.setUint8(o, msg.players.length); o += 1
 
@@ -157,6 +176,8 @@ export function encodeSnapshot(msg: SnapshotMsg): Uint8Array {
     view.setInt16(o, clamp(Math.round(wrapAngle(p.yaw) * 5000), -32768, 32767)); o += 2
     view.setUint8(o, p.escaped ? FLAG_ESCAPED : 0); o += 1
     view.setUint32(o, p.lastInputTick >>> 0); o += 4
+    view.setUint16(o, clamp(Math.round(p.gold), 0, 65535)); o += 2
+    view.setUint8(o, p.inventory & 0xff); o += 1
   }
 
   view.setUint8(o, msg.keys.length); o += 1
@@ -174,7 +195,7 @@ export function decodeSnapshot(data: Uint8Array): SnapshotMsg {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
   let o = 1
   const tick = view.getUint32(o); o += 4
-  const level = view.getUint16(o); o += 2
+  const levelIndex = view.getUint16(o) - 1; o += 2
   const flags = view.getUint8(o); o += 1
   const playerCount = view.getUint8(o); o += 1
 
@@ -186,7 +207,18 @@ export function decodeSnapshot(data: Uint8Array): SnapshotMsg {
     const yaw = view.getInt16(o) / 5000; o += 2
     const pflags = view.getUint8(o); o += 1
     const lastInputTick = view.getUint32(o); o += 4
-    players.push({ id, x, z, yaw, escaped: (pflags & FLAG_ESCAPED) !== 0, lastInputTick })
+    const gold = view.getUint16(o); o += 2
+    const inventory = view.getUint8(o); o += 1
+    players.push({
+      id,
+      x,
+      z,
+      yaw,
+      escaped: (pflags & FLAG_ESCAPED) !== 0,
+      lastInputTick,
+      gold,
+      inventory,
+    })
   }
 
   const keyCount = view.getUint8(o); o += 1
@@ -201,7 +233,7 @@ export function decodeSnapshot(data: Uint8Array): SnapshotMsg {
 
   return {
     tick,
-    level,
+    levelIndex,
     exitOpen: (flags & FLAG_EXIT_OPEN) !== 0,
     cleared: (flags & FLAG_CLEARED) !== 0,
     players,

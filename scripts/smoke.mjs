@@ -51,6 +51,37 @@ function check(label, condition, detail = '') {
   }
 }
 
+/**
+ * 로비에서 던전 1층으로 들어간다.
+ * 게임이 로비에서 시작하므로, 미로가 필요한 검사는 먼저 이걸 거쳐야 한다.
+ */
+async function enterDungeon(page) {
+  await page.evaluate(() => {
+    const host = window.__game.host()
+    const entrance = host.state.entranceCell
+    for (const player of host.state.players.values()) {
+      player.x = (entrance.x + 0.5) * 4
+      player.z = (entrance.y + 0.5) * 4
+    }
+  })
+  await page.waitForTimeout(250)
+
+  // F 를 고정 시간만 눌렀다 떼면 안 된다. 입력은 프레임에서 샘플링되는데,
+  // 이 컨테이너는 GPU 가 없어 4분할일 때 1~2fps 까지 떨어진다.
+  // 그 사이 프레임이 한 번도 안 돌면 F 를 눌렀다는 사실 자체가 전달되지 않는다.
+  // 존이 실제로 바뀔 때까지 누르고 있는다.
+  await page.keyboard.down('f')
+  try {
+    await page.waitForFunction(
+      () => window.__game.views.every((v) => v.state.zone === 'dungeon' && v.state.maze != null),
+      null,
+      { timeout: 30000 },
+    )
+  } finally {
+    await page.keyboard.up('f')
+  }
+}
+
 const server = await serveDist()
 await mkdir(SHOTS, { recursive: true })
 
@@ -74,7 +105,7 @@ try {
     if (msg.type() === 'error') consoleErrors.push(msg.text())
   })
 
-  await page.goto(`http://localhost:${PORT}/?views=1`, { waitUntil: 'load' })
+  await page.goto(`http://localhost:${PORT}/?views=1&skipSetup=1`, { waitUntil: 'load' })
 
   await page.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, { timeout: 20000 })
   check('페이지가 뜨고 미로가 생성됨', true)
@@ -91,13 +122,25 @@ try {
     const engine = window.__game.views[0]
     return {
       playerId: engine.state.playerId,
-      level: engine.state.level,
+      zone: engine.state.zone,
       mazeSize: engine.state.maze.w,
       players: engine.state.renderPlayers().length,
     }
   })
   check('playerId 배정', rendered.playerId === 1, `(got ${rendered.playerId})`)
-  check('레벨 1 / 15x15 미로', rendered.level === 1 && rendered.mazeSize === 15, JSON.stringify(rendered))
+  check('로비에서 시작한다', rendered.zone === 'lobby', JSON.stringify(rendered))
+
+  await enterDungeon(page)
+  const inDungeon = await page.evaluate(() => ({
+    zone: window.__game.views[0].state.zone,
+    levelIndex: window.__game.views[0].state.levelIndex,
+    mazeSize: window.__game.views[0].state.maze.w,
+  }))
+  check(
+    '던전 1층은 저장된 설정의 첫 레벨(15x15)',
+    inDungeon.levelIndex === 0 && inDungeon.mazeSize === 15,
+    JSON.stringify(inDungeon),
+  )
 
   // WebGL 이 실제로 그리고 있는지 확인한다.
   //
@@ -194,7 +237,7 @@ try {
   const quad = await browser.newPage({ viewport: { width: 1440, height: 900 } })
   const quadErrors = []
   quad.on('pageerror', (error) => quadErrors.push(String(error)))
-  await quad.goto(`http://localhost:${PORT}/?views=4&lat=120&jitter=30&loss=0.03`, { waitUntil: 'load' })
+  await quad.goto(`http://localhost:${PORT}/?views=4&skipSetup=1&lat=120&jitter=30&loss=0.03`, { waitUntil: 'load' })
 
   await quad.waitForFunction(() => window.__game?.host()?.playerCount() === 4, null, { timeout: 30000 })
   check('클라이언트 4명이 한 방에 접속', true)
@@ -206,6 +249,7 @@ try {
   )
   check('모든 화면이 미로를 만들고 4명을 인식', true)
 
+  await enterDungeon(quad)
   const sameMaze = await quad.evaluate(() => {
     const seeds = window.__game.views.map((v) => v.state.seed)
     const cells = window.__game.views.map((v) => v.state.maze.cells.join(','))
@@ -260,7 +304,7 @@ try {
       },
     })
   })
-  await blocked.goto(`http://localhost:${PORT}/?views=1`, { waitUntil: 'load' })
+  await blocked.goto(`http://localhost:${PORT}/?views=1&skipSetup=1`, { waitUntil: 'load' })
 
   let blockedBooted = true
   try {
@@ -293,7 +337,7 @@ try {
       },
     })
   })
-  await noLock.goto(`http://localhost:${PORT}/?views=1`, { waitUntil: 'load' })
+  await noLock.goto(`http://localhost:${PORT}/?views=1&skipSetup=1`, { waitUntil: 'load' })
   await noLock.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, {
     timeout: 20000,
   })
@@ -345,7 +389,7 @@ try {
   const tools = await browser.newPage({ viewport: { width: 1280, height: 800 } })
   const toolErrors = []
   tools.on('pageerror', (error) => toolErrors.push(String(error)))
-  await tools.goto(`http://localhost:${PORT}/?views=1`, { waitUntil: 'load' })
+  await tools.goto(`http://localhost:${PORT}/?views=1&skipSetup=1`, { waitUntil: 'load' })
   await tools.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, {
     timeout: 20000,
   })
@@ -358,8 +402,9 @@ try {
     return dbg.getBoundingClientRect().top >= net.getBoundingClientRect().bottom - 1
   }))
 
+  await enterDungeon(tools)
   const rooms = await tools.evaluate(() => window.__game.views[0].state.maze.rooms)
-  check('15x15 미로에 사각형 방 2개가 생성됨', rooms.length === 2, JSON.stringify(rooms))
+  check('던전 1층에 사각형 방 2개가 생성됨', rooms.length === 2, JSON.stringify(rooms))
   check('방이 3칸 이상 크기', rooms.every((r) => r.w >= 3 && r.h >= 3), JSON.stringify(rooms))
 
   // 전체 보기 끄면 탐사한 부분만, 켜면 미로 전체가 보여야 한다.
@@ -416,6 +461,127 @@ try {
 
   check('디버그 패널 조작 중 예외 없음', toolErrors.length === 0, toolErrors.slice(0, 2).join(' | '))
   await tools.close()
+  console.log('\n[6] 설정 화면 · 로비 · 상점 · 던전 입장')
+  const setup = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const setupErrors = []
+  setup.on('pageerror', (error) => setupErrors.push(String(error)))
+  // 설정 화면부터 보려면 skipSetup 을 붙이지 않는다.
+  await setup.goto(`http://localhost:${PORT}/`, { waitUntil: 'load' })
+
+  await setup.waitForSelector('.setup__panel', { timeout: 20000 })
+  check('설정 화면이 뜬다', true)
+
+  const initialLevels = await setup.locator('.setup__level').count()
+  await setup.click('[data-action="add"]')
+  await setup.waitForTimeout(200)
+  check(
+    '레벨 추가 버튼으로 레벨이 늘어난다',
+    (await setup.locator('.setup__level').count()) === initialLevels + 1,
+  )
+
+  // 1층을 작게 바꾸고 열쇠를 3개로. 나중에 실제로 반영됐는지 확인한다.
+  const firstRow = setup.locator('.setup__level').first()
+  await firstRow.locator('.setup__num').nth(0).fill('11')
+  await firstRow.locator('.setup__num').nth(0).blur()
+  await firstRow.locator('.setup__num').nth(1).fill('11')
+  await firstRow.locator('.setup__num').nth(1).blur()
+  await firstRow.locator('.setup__num').nth(2).fill('1')
+  await firstRow.locator('.setup__num').nth(2).blur()
+  await firstRow.locator('.setup__num').nth(3).fill('3')
+  await firstRow.locator('.setup__num').nth(3).blur()
+
+  // 범위를 벗어난 값은 자동으로 잘려야 한다.
+  await firstRow.locator('.setup__num').nth(0).fill('999')
+  await firstRow.locator('.setup__num').nth(0).blur()
+  await setup.waitForTimeout(200)
+  const clamped = await firstRow.locator('.setup__num').nth(0).inputValue()
+  check('범위를 벗어난 값은 상한으로 잘린다', clamped === '41', `(입력 999 → ${clamped})`)
+  await firstRow.locator('.setup__num').nth(0).fill('11')
+  await firstRow.locator('.setup__num').nth(0).blur()
+
+  await setup.screenshot({ path: join(SHOTS, '08-setup.png') })
+  await setup.click('[data-action="start"]')
+
+  await setup.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, {
+    timeout: 20000,
+  })
+  check('시작하면 설정 화면이 사라지고 게임이 뜬다', (await setup.locator('.setup__panel').count()) === 0)
+  check('로비에서 시작한다', await setup.evaluate(() => window.__game.views[0].state.zone === 'lobby'))
+  check(
+    '시작 골드가 있다',
+    await setup.evaluate(() => window.__game.host().state.players.get(1).gold > 0),
+  )
+
+  // 상점 앞으로 옮기면 구매 패널이 열린다.
+  await setup.evaluate(() => {
+    const host = window.__game.host()
+    const shop = host.state.shopCell
+    const player = host.state.players.get(1)
+    player.x = (shop.x + 0.5) * 4
+    player.z = (shop.y + 0.5) * 4
+  })
+  await setup.waitForFunction(
+    () => document.querySelector('.shop')?.classList.contains('is-open') === true,
+    null,
+    { timeout: 15000 },
+  )
+  check('상점 앞에서 구매 패널이 열린다', true)
+  await setup.screenshot({ path: join(SHOTS, '09-shop.png') })
+
+  const goldBefore = await setup.evaluate(() => window.__game.host().state.players.get(1).gold)
+  await setup.locator('.shop__buy:not([disabled])').first().click()
+  await setup.waitForFunction(
+    (before) => window.__game.host().state.players.get(1).gold < before,
+    goldBefore,
+    { timeout: 15000 },
+  )
+  const bought = await setup.evaluate(() => ({
+    gold: window.__game.host().state.players.get(1).gold,
+    inventory: window.__game.host().state.players.get(1).inventory,
+  }))
+  check('아이템을 사면 골드가 줄고 인벤토리에 들어간다', bought.inventory !== 0 && bought.gold < goldBefore,
+    `(${goldBefore}G → ${bought.gold}G, inv=${bought.inventory})`)
+
+  // 던전 입구로 이동 후 F
+  await setup.evaluate(() => {
+    const host = window.__game.host()
+    const entrance = host.state.entranceCell
+    const player = host.state.players.get(1)
+    player.x = (entrance.x + 0.5) * 4
+    player.z = (entrance.y + 0.5) * 4
+  })
+  await setup.waitForTimeout(300)
+  await setup.keyboard.down('f')
+  await setup.waitForTimeout(400)
+  await setup.keyboard.up('f')
+
+  await setup.waitForFunction(() => window.__game.views[0].state.zone === 'dungeon', null, {
+    timeout: 15000,
+  })
+  check('던전 입구에서 F 로 입장한다', true)
+
+  const dungeon = await setup.evaluate(() => ({
+    w: window.__game.views[0].state.maze.w,
+    h: window.__game.views[0].state.maze.h,
+    rooms: window.__game.views[0].state.maze.rooms.length,
+    keys: window.__game.views[0].state.maze.keys.length,
+    gold: window.__game.host().state.players.get(1).gold,
+    inventory: window.__game.host().state.players.get(1).inventory,
+  }))
+  check(
+    '설정한 11x11 · 방 1 · 열쇠 3 이 그대로 반영된다',
+    dungeon.w === 11 && dungeon.h === 11 && dungeon.rooms === 1 && dungeon.keys === 3,
+    JSON.stringify(dungeon),
+  )
+  check(
+    '던전으로 넘어가도 골드와 아이템이 유지된다',
+    dungeon.gold === bought.gold && dungeon.inventory === bought.inventory,
+    JSON.stringify(dungeon),
+  )
+  await setup.screenshot({ path: join(SHOTS, '10-dungeon.png') })
+
+  check('설정 → 로비 → 던전 흐름에서 예외 없음', setupErrors.length === 0, setupErrors.slice(0, 2).join(' | '))
+  await setup.close()
 } finally {
   await browser.close()
   server.close()

@@ -37,6 +37,8 @@ export const EYE_H = 1.55
 /** 열쇠 / 탈출구 상호작용 반경. */
 export const PICKUP_R = 1.3
 export const EXIT_R = 1.6
+/** 상점 / 던전 입구에 반응하는 반경. */
+export const INTERACT_R = 2.4
 
 /** 원격 플레이어 렌더링 지연. 스냅샷 2개분 버퍼를 확보해 튐을 막는다. */
 export const INTERP_DELAY_MS = 100
@@ -58,16 +60,5 @@ export const MAX_PLAYERS = 4
 /** 레벨 클리어 후 다음 레벨로 넘어가기까지의 대기(초). */
 export const CLEAR_HOLD_SEC = 3
 
-/**
- * 레벨별 미로 크기. 홀수로 유지하고 상한을 둔다.
- * 레벨 1 은 "적당한 크기"인 15x15 에서 시작해 레벨마다 4칸씩 커진다.
- */
-export function mazeSizeForLevel(level: number): number {
-  const size = 15 + (level - 1) * 4
-  return Math.min(size, 41)
-}
-
-/** 레벨별 필요한 열쇠 개수. 지금은 1개 고정이지만 배열 구조라 늘리기 쉽다. */
-export function keyCountForLevel(_level: number): number {
-  return 1
-}
+// 미로 크기와 열쇠 개수는 이제 상수가 아니라 런 설정(config.ts)에서 온다.
+// 테스트할 때 조합을 바로 바꿔볼 수 있어야 해서 데이터로 뺐다.

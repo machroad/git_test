@@ -363,3 +363,256 @@ body.minimap-expanded .stage--2 .view:not(:first-child) .hud__minimap,
 body.minimap-expanded .stage--4 .view:not(:first-child) .hud__minimap {
   display: none;
 }
+
+/* ---------------------------------------------------------------------------
+   설정 화면
+   --------------------------------------------------------------------------- */
+.setup {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(120% 90% at 50% 0%, #12182a 0%, #05070d 70%);
+  overflow-y: auto;
+}
+
+.setup__panel {
+  width: min(620px, 100%);
+  padding: 26px 28px 22px;
+  border: 1px solid var(--hud-border);
+  border-radius: 14px;
+  background: rgba(10, 13, 22, 0.9);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+
+.setup__title {
+  margin: 0 0 6px;
+  font-size: 21px;
+  letter-spacing: -0.01em;
+}
+
+.setup__lead {
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.65;
+  opacity: 0.72;
+  text-wrap: pretty;
+}
+
+.setup__section {
+  margin-bottom: 20px;
+}
+
+.setup__section h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.setup__sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.setup__sectionHead h2 {
+  margin: 0;
+}
+
+.setup__levelHead,
+.setup__level {
+  display: grid;
+  grid-template-columns: 32px repeat(4, 1fr) 56px;
+  gap: 8px;
+  align-items: center;
+}
+
+.setup__levelHead {
+  margin-bottom: 6px;
+  font-size: 11px;
+  opacity: 0.55;
+  letter-spacing: 0.03em;
+}
+
+.setup__levels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup__levelNo {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+  text-align: center;
+}
+
+.setup__num {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--hud-border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--hud-text);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.setup__num:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.setup button {
+  appearance: none;
+  border: 1px solid var(--hud-border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--hud-text);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.setup button:hover:not(:disabled) {
+  background: rgba(111, 211, 255, 0.16);
+}
+
+.setup button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.setup__viewBtn.is-on {
+  background: rgba(111, 211, 255, 0.28);
+  border-color: rgba(111, 211, 255, 0.5);
+  font-weight: 600;
+}
+
+.setup__views {
+  display: flex;
+  gap: 6px;
+}
+
+.setup__hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+.setup__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--hud-border);
+  padding-top: 16px;
+}
+
+.setup__start {
+  background: rgba(111, 211, 255, 0.3) !important;
+  border-color: rgba(111, 211, 255, 0.55) !important;
+  font-weight: 600;
+  padding: 8px 22px !important;
+  font-size: 13px !important;
+}
+
+/* ---------------------------------------------------------------------------
+   상점 / 재화
+   --------------------------------------------------------------------------- */
+.status--gold {
+  color: #ffd964;
+  font-weight: 600;
+}
+
+.shop {
+  position: absolute;
+  left: 50%;
+  bottom: 12%;
+  transform: translate(-50%, 12px);
+  width: min(420px, 78%);
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 210, 120, 0.35);
+  border-radius: 12px;
+  background: rgba(16, 13, 8, 0.92);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.shop.is-open {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+.shop__title {
+  font-weight: 600;
+  color: #ffd964;
+  margin-bottom: 8px;
+}
+
+.shop__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shop__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.shop__name {
+  font-size: 13px;
+}
+
+.shop__desc {
+  font-size: 11px;
+  opacity: 0.6;
+  line-height: 1.4;
+}
+
+.shop__row.is-owned .shop__name {
+  opacity: 0.5;
+}
+
+.shop__buy {
+  flex: none;
+  appearance: none;
+  min-width: 68px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 210, 120, 0.4);
+  border-radius: 7px;
+  background: rgba(255, 200, 90, 0.16);
+  color: #ffe9b0;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.shop__buy:hover:not(:disabled) {
+  background: rgba(255, 200, 90, 0.3);
+}
+
+.shop__buy:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.shop__buy:focus-visible {
+  outline: 2px solid #ffd964;
+  outline-offset: 2px;
+}

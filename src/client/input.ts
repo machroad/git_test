@@ -147,6 +147,11 @@ export class InputController {
     })
   }
 
+  /** 상호작용 키(F)가 눌려 있는지. 눌린 "순간" 판정은 시뮬레이션 쪽에서 한다. */
+  interactHeld(): boolean {
+    return this.enabled && this.keys.has('KeyF')
+  }
+
   moveIntent(): MoveIntent {
     if (!this.enabled) return { forward: 0, strafe: 0 }
     let forward = 0

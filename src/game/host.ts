@@ -5,6 +5,7 @@
  * (나중에) Steam P2P 어디에서든 똑같이 동작한다.
  */
 import { MAX_PLAYERS, TICK_MS } from '../shared/constants'
+import { DEFAULT_RUN_CONFIG, type RunConfig } from '../shared/config'
 import {
   MsgType,
   SNAPSHOT_MAX_BYTES,
@@ -13,15 +14,17 @@ import {
   encodeJson,
   encodeSnapshot,
   messageType,
+  type BuyMsg,
   type JoinMsg,
-  type LevelMsg,
   type RosterMsg,
   type SnapshotMsg,
   type WelcomeMsg,
+  type ZoneMsg,
 } from '../shared/protocol'
 import {
   addPlayer,
-  createGameState,
+  buyItem,
+  createRunState,
   removePlayer,
   stepGame,
   type GameState,
@@ -30,7 +33,7 @@ import {
 import type { HostTransport, PeerId } from '../net/transport'
 
 export interface GameHostOptions {
-  level?: number
+  config?: RunConfig
   seed?: number
   onStateReplaced?: (state: GameState) => void
 }
@@ -52,7 +55,7 @@ export class GameHost {
   constructor(transport: HostTransport, options: GameHostOptions = {}) {
     this.transport = transport
     this.onStateReplaced = options.onStateReplaced
-    this.state = createGameState(options.level ?? 1, options.seed ?? 1)
+    this.state = createRunState(options.config ?? DEFAULT_RUN_CONFIG, options.seed ?? 1)
 
     transport.onPeerJoin((peer) => this.handleJoin(peer))
     transport.onPeerLeave((peer) => this.handleLeave(peer))
@@ -97,8 +100,7 @@ export class GameHost {
     if (replaced) {
       this.state = replaced
       this.inputs.clear()
-      const msg: LevelMsg = { level: replaced.level, seed: replaced.seed, tick: replaced.tick }
-      this.transport.broadcast(encodeJson(MsgType.Level, msg), true)
+      this.transport.broadcast(encodeJson(MsgType.Zone, this.zoneMessage()), true)
       this.onStateReplaced?.(replaced)
     }
     this.broadcastSnapshot()
@@ -107,7 +109,7 @@ export class GameHost {
   private broadcastSnapshot() {
     const msg: SnapshotMsg = {
       tick: this.state.tick,
-      level: this.state.level,
+      levelIndex: this.state.levelIndex,
       exitOpen: this.state.exitOpen,
       cleared: this.state.phase === 'cleared',
       players: [...this.state.players.values()].map((p) => ({
@@ -117,6 +119,8 @@ export class GameHost {
         yaw: p.yaw,
         escaped: p.escaped,
         lastInputTick: p.lastInputTick,
+        gold: p.gold,
+        inventory: p.inventory,
       })),
       keys: this.state.keys.map((k) => ({
         x: k.x,
@@ -150,9 +154,10 @@ export class GameHost {
 
     const welcome: WelcomeMsg = {
       playerId,
-      level: this.state.level,
       seed: this.state.seed,
       tick: this.state.tick,
+      config: this.state.config,
+      zone: this.zoneMessage(),
     }
     this.transport.sendTo(peer, encodeJson(MsgType.Welcome, welcome), true)
     this.broadcastRoster()
@@ -181,6 +186,12 @@ export class GameHost {
         this.inputs.set(playerId, input)
         break
       }
+      case MsgType.Buy: {
+        const buy = decodeJson<BuyMsg>(data)
+        // 실패해도 따로 알리지 않는다. 다음 스냅샷의 골드/인벤토리가 곧 진실이다.
+        buyItem(this.state, playerId, buy.itemId)
+        break
+      }
       case MsgType.Join: {
         const join = decodeJson<JoinMsg>(data)
         const player = this.state.players.get(playerId)
@@ -192,6 +203,14 @@ export class GameHost {
       }
       default:
         break
+    }
+  }
+
+  private zoneMessage(): ZoneMsg {
+    return {
+      zone: this.state.zone,
+      levelIndex: this.state.levelIndex,
+      tick: this.state.tick,
     }
   }
 

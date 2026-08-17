@@ -9,12 +9,22 @@
 import { CELL } from '../shared/constants'
 import { E, N, S, W, cellIndex, cellToWorld, type Maze } from '../shared/maze'
 import type { RenderKey, RenderPlayer } from '../game/client-state'
+import { showsKeysFor } from '../shared/items'
 import { debugSettings } from './debug-settings'
 import { PLAYER_COLORS } from './scene'
 
 const PADDING = 6
 
+/** 로비에서만 쓰는 표시 정보. 던전에서는 null 을 넘긴다. */
+export interface LobbyMarkers {
+  shop: { x: number; z: number }
+  entrance: { x: number; z: number }
+}
+
 export class Minimap {
+  /** 로컬 플레이어의 인벤토리. 나침반 여부에 따라 열쇠 표시가 달라진다. */
+  inventory = 0
+
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
 
@@ -31,6 +41,7 @@ export class Minimap {
     players: RenderPlayer[],
     keys: RenderKey[],
     exitOpen: boolean,
+    lobby: LobbyMarkers | null = null,
   ): void {
     const dpr = window.devicePixelRatio || 1
     const cssWidth = this.canvas.clientWidth
@@ -50,6 +61,8 @@ export class Minimap {
     // 탐사한 곳은 밝게, 아직 안 가본 곳은 어둡게 구분해서 진행도는 계속 보이게 한다.
     const revealAll = debugSettings.minimapRevealAll
     const isVisible = (index: number) => revealAll || explored.has(index)
+    // 나침반을 샀으면 아직 안 가본 곳의 열쇠도 보인다.
+    const showAllKeys = revealAll || showsKeysFor(this.inventory)
 
     const scale = Math.min(
       (cssWidth - PADDING * 2) / maze.w,
@@ -138,18 +151,31 @@ export class Minimap {
       }
     }
 
-    // 탈출구는 목표라서 항상 보여준다. 열리기 전에는 흐리게.
-    const exit = cellToWorld(maze.exit)
-    ctx.fillStyle = exitOpen ? 'rgba(80, 255, 130, 0.95)' : 'rgba(255, 90, 95, 0.55)'
-    const exitSize = scale * 0.62
-    ctx.fillRect(toX(exit.x) - exitSize / 2, toY(exit.z) - exitSize / 2, exitSize, exitSize)
+    if (lobby) {
+      // 로비에는 탈출구도 열쇠도 없다. 상점과 던전 입구를 대신 표시한다.
+      const marker = scale * 0.66
+      ctx.fillStyle = 'rgba(255, 200, 90, 0.95)'
+      ctx.fillRect(toX(lobby.shop.x) - marker / 2, toY(lobby.shop.z) - marker / 2, marker, marker)
+
+      ctx.fillStyle = 'rgba(190, 130, 255, 0.95)'
+      ctx.beginPath()
+      ctx.arc(toX(lobby.entrance.x), toY(lobby.entrance.z), marker / 2, 0, Math.PI * 2)
+      ctx.fill()
+    } else {
+      // 탈출구는 목표라서 항상 보여준다. 열리기 전에는 흐리게.
+      const exit = cellToWorld(maze.exit)
+      ctx.fillStyle = exitOpen ? 'rgba(80, 255, 130, 0.95)' : 'rgba(255, 90, 95, 0.55)'
+      const exitSize = scale * 0.62
+      ctx.fillRect(toX(exit.x) - exitSize / 2, toY(exit.z) - exitSize / 2, exitSize, exitSize)
+    }
 
     // 열쇠는 탐사한 곳에서만 보인다. 안 그러면 찾을 이유가 없어진다.
+    // 나침반이 있으면 탐사와 무관하게 보인다.
     for (const key of keys) {
       if (key.collected) continue
       const cellX = Math.floor(key.x / CELL)
       const cellY = Math.floor(key.z / CELL)
-      if (!isVisible(cellY * maze.w + cellX)) continue
+      if (!showAllKeys && !isVisible(cellY * maze.w + cellX)) continue
       ctx.fillStyle = 'rgba(255, 218, 70, 0.95)'
       ctx.beginPath()
       ctx.arc(toX(key.x), toY(key.z), Math.max(2, scale * 0.26), 0, Math.PI * 2)
