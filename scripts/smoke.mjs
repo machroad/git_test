@@ -341,6 +341,81 @@ try {
   check('pointer lock 차단 환경에서 예외 없음', noLockErrors.length === 0, noLockErrors.slice(0, 2).join(' | '))
   await noLock.screenshot({ path: join(SHOTS, '06-drag-look.png') })
   await noLock.close()
+  console.log('\n[5] 디버그 패널 · 미니맵 전체 보기 · 사각형 방')
+  const tools = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  const toolErrors = []
+  tools.on('pageerror', (error) => toolErrors.push(String(error)))
+  await tools.goto(`http://localhost:${PORT}/?views=1`, { waitUntil: 'load' })
+  await tools.waitForFunction(() => window.__game?.views?.[0]?.state?.maze != null, null, {
+    timeout: 20000,
+  })
+
+  check('네트워크 패널 아래에 디버그 패널이 있음', await tools.evaluate(() => {
+    const net = document.querySelector('.debug:not(.debug--tools)')
+    const dbg = document.querySelector('.debug--tools')
+    if (!net || !dbg) return false
+    // 겹치지 않고 아래에 놓여야 한다.
+    return dbg.getBoundingClientRect().top >= net.getBoundingClientRect().bottom - 1
+  }))
+
+  const rooms = await tools.evaluate(() => window.__game.views[0].state.maze.rooms)
+  check('15x15 미로에 사각형 방 2개가 생성됨', rooms.length === 2, JSON.stringify(rooms))
+  check('방이 3칸 이상 크기', rooms.every((r) => r.w >= 3 && r.h >= 3), JSON.stringify(rooms))
+
+  // 전체 보기 끄면 탐사한 부분만, 켜면 미로 전체가 보여야 한다.
+  const countMinimapInk = () =>
+    tools.evaluate(() => {
+      const canvas = document.querySelector('.hud__minimap canvas')
+      const ctx = canvas.getContext('2d')
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+      let lit = 0
+      for (let i = 0; i < data.length; i += 4) {
+        // 배경(어두운 남색)보다 밝은 픽셀 수를 센다.
+        if (data[i] + data[i + 1] + data[i + 2] > 90) lit++
+      }
+      return lit
+    })
+
+  const inkBefore = await countMinimapInk()
+  await tools.click('.debug--tools input[data-flag="minimapRevealAll"]')
+  await tools.waitForTimeout(500)
+  const inkAfter = await countMinimapInk()
+  check(
+    '미니맵 전체 보기를 켜면 그려지는 영역이 늘어남',
+    inkAfter > inkBefore * 1.5,
+    `(밝은 픽셀 ${inkBefore} → ${inkAfter})`,
+  )
+
+  // 크게 보기
+  const sizeBefore = await tools.locator('.hud__minimap').boundingBox()
+  await tools.keyboard.press('m')
+  await tools.waitForTimeout(400)
+  const sizeAfter = await tools.locator('.hud__minimap').boundingBox()
+  check(
+    'M 키로 미니맵이 커짐',
+    sizeAfter.width > sizeBefore.width * 1.8,
+    `(${Math.round(sizeBefore.width)}px → ${Math.round(sizeAfter.width)}px)`,
+  )
+  check(
+    '크게 보기 체크박스도 함께 켜짐',
+    await tools.evaluate(
+      () => document.querySelector('.debug--tools input[data-flag="minimapExpanded"]').checked,
+    ),
+  )
+  await tools.screenshot({ path: join(SHOTS, '07-minimap-expanded.png') })
+
+  await tools.keyboard.press('m')
+  await tools.waitForTimeout(400)
+  const sizeRestored = await tools.locator('.hud__minimap').boundingBox()
+  check('M 키를 다시 누르면 원래 크기로 돌아옴', Math.abs(sizeRestored.width - sizeBefore.width) < 2)
+
+  check('FPS 표시가 갱신됨', await tools.evaluate(() => {
+    const fps = document.querySelector('.debug--tools [data-out="fps"]')?.textContent ?? '-'
+    return fps !== '-' && Number(fps) > 0
+  }))
+
+  check('디버그 패널 조작 중 예외 없음', toolErrors.length === 0, toolErrors.slice(0, 2).join(' | '))
+  await tools.close()
 } finally {
   await browser.close()
   server.close()

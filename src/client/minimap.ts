@@ -9,6 +9,7 @@
 import { CELL } from '../shared/constants'
 import { E, N, S, W, cellIndex, cellToWorld, type Maze } from '../shared/maze'
 import type { RenderKey, RenderPlayer } from '../game/client-state'
+import { debugSettings } from './debug-settings'
 import { PLAYER_COLORS } from './scene'
 
 const PADDING = 6
@@ -45,6 +46,11 @@ export class Minimap {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, cssWidth, cssHeight)
 
+    // 전체 보기를 켜면 탐사 여부와 상관없이 모든 칸을 그린다.
+    // 탐사한 곳은 밝게, 아직 안 가본 곳은 어둡게 구분해서 진행도는 계속 보이게 한다.
+    const revealAll = debugSettings.minimapRevealAll
+    const isVisible = (index: number) => revealAll || explored.has(index)
+
     const scale = Math.min(
       (cssWidth - PADDING * 2) / maze.w,
       (cssHeight - PADDING * 2) / maze.h,
@@ -59,32 +65,78 @@ export class Minimap {
     ctx.fillStyle = 'rgba(6, 8, 14, 0.82)'
     ctx.fillRect(0, 0, cssWidth, cssHeight)
 
-    // 탐사한 칸 바닥
-    ctx.fillStyle = 'rgba(120, 150, 200, 0.16)'
-    for (const index of explored) {
-      const cx = index % maze.w
-      const cy = (index / maze.w) | 0
-      ctx.fillRect(originX + cx * scale, originY + cy * scale, scale, scale)
+    // 방 영역을 먼저 칠해서 바닥보다 아래에 깔리게 한다.
+    if (debugSettings.highlightRooms) {
+      ctx.fillStyle = 'rgba(110, 200, 255, 0.14)'
+      for (const room of maze.rooms) {
+        // 방 안에 보이는 칸이 하나라도 있을 때만 표시한다.
+        let anyVisible = false
+        for (let y = room.y; y < room.y + room.h && !anyVisible; y++) {
+          for (let x = room.x; x < room.x + room.w; x++) {
+            if (isVisible(y * maze.w + x)) { anyVisible = true; break }
+          }
+        }
+        if (!anyVisible) continue
+        ctx.fillRect(
+          originX + room.x * scale,
+          originY + room.y * scale,
+          room.w * scale,
+          room.h * scale,
+        )
+      }
     }
 
-    // 탐사한 칸의 벽만 그린다
-    ctx.strokeStyle = 'rgba(170, 195, 235, 0.75)'
-    ctx.lineWidth = Math.max(1, scale * 0.12)
-    ctx.beginPath()
-    for (const index of explored) {
-      const cx = index % maze.w
-      const cy = (index / maze.w) | 0
-      const mask = maze.cells[cellIndex(maze, cx, cy)]
-      const x0 = originX + cx * scale
-      const y0 = originY + cy * scale
-      const x1 = x0 + scale
-      const y1 = y0 + scale
-      if (mask & N) { ctx.moveTo(x0, y0); ctx.lineTo(x1, y0) }
-      if (mask & S) { ctx.moveTo(x0, y1); ctx.lineTo(x1, y1) }
-      if (mask & W) { ctx.moveTo(x0, y0); ctx.lineTo(x0, y1) }
-      if (mask & E) { ctx.moveTo(x1, y0); ctx.lineTo(x1, y1) }
+    // 칸 바닥. 탐사한 곳과 아닌 곳을 밝기로 구분한다.
+    for (let cy = 0; cy < maze.h; cy++) {
+      for (let cx = 0; cx < maze.w; cx++) {
+        const index = cy * maze.w + cx
+        if (!isVisible(index)) continue
+        ctx.fillStyle = explored.has(index)
+          ? 'rgba(120, 150, 200, 0.16)'
+          : 'rgba(120, 150, 200, 0.05)'
+        ctx.fillRect(originX + cx * scale, originY + cy * scale, scale, scale)
+      }
     }
-    ctx.stroke()
+
+    // 벽. 탐사 여부에 따라 진하기를 달리해 두 번 그린다.
+    for (const seen of [true, false]) {
+      if (!seen && !revealAll) continue
+      ctx.strokeStyle = seen ? 'rgba(170, 195, 235, 0.75)' : 'rgba(140, 165, 205, 0.22)'
+      ctx.lineWidth = Math.max(1, scale * 0.12)
+      ctx.beginPath()
+      for (let cy = 0; cy < maze.h; cy++) {
+        for (let cx = 0; cx < maze.w; cx++) {
+          const index = cy * maze.w + cx
+          if (!isVisible(index)) continue
+          if (explored.has(index) !== seen) continue
+          const mask = maze.cells[cellIndex(maze, cx, cy)]
+          const x0 = originX + cx * scale
+          const y0 = originY + cy * scale
+          const x1 = x0 + scale
+          const y1 = y0 + scale
+          if (mask & N) { ctx.moveTo(x0, y0); ctx.lineTo(x1, y0) }
+          if (mask & S) { ctx.moveTo(x0, y1); ctx.lineTo(x1, y1) }
+          if (mask & W) { ctx.moveTo(x0, y0); ctx.lineTo(x0, y1) }
+          if (mask & E) { ctx.moveTo(x1, y0); ctx.lineTo(x1, y1) }
+        }
+      }
+      ctx.stroke()
+    }
+
+    // 방 테두리
+    if (debugSettings.highlightRooms) {
+      ctx.strokeStyle = 'rgba(120, 210, 255, 0.55)'
+      ctx.lineWidth = Math.max(1, scale * 0.09)
+      for (const room of maze.rooms) {
+        if (!isVisible(room.y * maze.w + room.x) && !revealAll) continue
+        ctx.strokeRect(
+          originX + room.x * scale,
+          originY + room.y * scale,
+          room.w * scale,
+          room.h * scale,
+        )
+      }
+    }
 
     // 탈출구는 목표라서 항상 보여준다. 열리기 전에는 흐리게.
     const exit = cellToWorld(maze.exit)
@@ -97,7 +149,7 @@ export class Minimap {
       if (key.collected) continue
       const cellX = Math.floor(key.x / CELL)
       const cellY = Math.floor(key.z / CELL)
-      if (!explored.has(cellY * maze.w + cellX)) continue
+      if (!isVisible(cellY * maze.w + cellX)) continue
       ctx.fillStyle = 'rgba(255, 218, 70, 0.95)'
       ctx.beginPath()
       ctx.arc(toX(key.x), toY(key.z), Math.max(2, scale * 0.26), 0, Math.PI * 2)

@@ -11,6 +11,7 @@
  */
 import './style.css'
 import { installBrowserCompat } from './client/compat'
+import { debugSettings } from './client/debug-settings'
 import { GameHost } from './game/host'
 import { InProcessHub } from './net/in-process'
 import { connectWebSocket } from './net/websocket'
@@ -43,6 +44,14 @@ const views: GameView[] = []
 let activeView: GameView | null = null
 let hub: InProcessHub | null = null
 let host: GameHost | null = null
+// boot() 이 모듈 평가 중에 바로 실행되므로, 그 안에서 건드리는 모듈 상태는
+// 반드시 호출보다 먼저 선언돼야 한다. 아래에 두면 TDZ 로 초기화가 통째로 실패한다.
+let debugOutputs: {
+  fps: HTMLOutputElement
+  maze: HTMLOutputElement
+  rooms: HTMLOutputElement
+} | null = null
+let debugStack: HTMLElement | null = null
 
 boot().catch((error) => {
   // 부팅 중 예외는 화면이 까맣게만 남아 원인을 알기 어렵다. 눈에 보이게 띄운다.
@@ -87,6 +96,7 @@ function bootInProcess(stage: HTMLElement) {
   }
 
   buildDebugPanel()
+  buildDebugToolsPanel()
 }
 
 async function bootWebSocket(stage: HTMLElement, url: string) {
@@ -126,11 +136,27 @@ function focusView(view: GameView) {
 
 function startRenderLoop() {
   let last = performance.now()
+  let fpsAccum = 0
+  let fpsFrames = 0
+
   const frame = (now: number) => {
     // 탭이 백그라운드에 있다가 돌아오면 dt 가 몇 초씩 튄다. 상한을 둔다.
     const dt = Math.min(0.1, (now - last) / 1000)
     last = now
     for (const view of views) view.frame(dt)
+
+    // FPS 는 매 프레임 갱신하면 숫자가 튀어서 읽을 수가 없다. 0.5초씩 모아서 평균낸다.
+    fpsAccum += dt
+    fpsFrames++
+    if (debugOutputs && fpsAccum >= 0.5) {
+      debugOutputs.fps.textContent = String(Math.round(fpsFrames / fpsAccum))
+      const maze = views[0]?.state.maze
+      debugOutputs.maze.textContent = maze ? `${maze.w}x${maze.h}` : '-'
+      debugOutputs.rooms.textContent = maze ? String(maze.rooms.length) : '-'
+      fpsAccum = 0
+      fpsFrames = 0
+    }
+
     requestAnimationFrame(frame)
   }
   requestAnimationFrame(frame)
@@ -140,6 +166,16 @@ function startRenderLoop() {
  * 우상단 디버그 패널. 인프로세스 전송일 때만 의미가 있다.
  * 지연과 손실을 실시간으로 바꿔가며 보간과 예측 보정이 버티는지 눈으로 확인한다.
  */
+/** 우상단 패널들을 세로로 쌓는 컨테이너. 패널 높이를 몰라도 겹치지 않는다. */
+function panelStack(): HTMLElement {
+  if (!debugStack) {
+    debugStack = document.createElement('div')
+    debugStack.className = 'debug-stack'
+    document.body.appendChild(debugStack)
+  }
+  return debugStack
+}
+
 function buildDebugPanel() {
   if (!hub) return
   const panel = document.createElement('div')
@@ -159,7 +195,7 @@ function buildDebugPanel() {
       화면 <a href="?views=1">1</a> · <a href="?views=2">2</a> · <a href="?views=4">4</a>
     </div>
   `
-  document.body.appendChild(panel)
+  panelStack().appendChild(panel)
 
   const outputs = {
     lat: panel.querySelector('[data-out="lat"]') as HTMLOutputElement,
@@ -184,6 +220,71 @@ function buildDebugPanel() {
     })
   })
   sync()
+}
+
+/**
+ * 네트워크 패널 아래에 붙는 디버그 패널.
+ * 미니맵을 어떻게 보여줄지와 현재 프레임레이트를 다룬다.
+ */
+function buildDebugToolsPanel() {
+  const panel = document.createElement('div')
+  panel.className = 'debug debug--tools'
+  panel.innerHTML = `
+    <div class="debug__title">디버그</div>
+    <label class="debug__check">
+      <input type="checkbox" data-flag="minimapRevealAll"> 미니맵 전체 보기
+    </label>
+    <label class="debug__check">
+      <input type="checkbox" data-flag="minimapExpanded"> 미니맵 크게 보기 <span class="debug__key">M</span>
+    </label>
+    <label class="debug__check">
+      <input type="checkbox" data-flag="highlightRooms" checked> 방 강조 표시
+    </label>
+    <div class="debug__stats">
+      <span>FPS <output data-out="fps">-</output></span>
+      <span>미로 <output data-out="maze">-</output></span>
+      <span>방 <output data-out="rooms">-</output></span>
+    </div>
+  `
+  panelStack().appendChild(panel)
+
+  const checkboxes = panel.querySelectorAll<HTMLInputElement>('input[data-flag]')
+  const syncChecks = () => {
+    checkboxes.forEach((input) => {
+      const flag = input.dataset.flag as keyof typeof debugSettings
+      input.checked = debugSettings[flag]
+    })
+    applyMinimapExpanded()
+  }
+
+  checkboxes.forEach((input) => {
+    input.addEventListener('change', () => {
+      const flag = input.dataset.flag as keyof typeof debugSettings
+      debugSettings[flag] = input.checked
+      applyMinimapExpanded()
+    })
+  })
+
+  // M 키로도 미니맵을 키웠다 줄인다. 조작 중에 마우스를 패널까지 옮기기 번거롭다.
+  window.addEventListener('keydown', (event) => {
+    if (event.code !== 'KeyM') return
+    debugSettings.minimapExpanded = !debugSettings.minimapExpanded
+    syncChecks()
+  })
+
+  debugOutputs = {
+    fps: panel.querySelector('[data-out="fps"]') as HTMLOutputElement,
+    maze: panel.querySelector('[data-out="maze"]') as HTMLOutputElement,
+    rooms: panel.querySelector('[data-out="rooms"]') as HTMLOutputElement,
+  }
+  syncChecks()
+}
+
+function applyMinimapExpanded() {
+  document.body.classList.toggle('minimap-expanded', debugSettings.minimapExpanded)
+  // 캔버스 크기가 바뀌므로 다음 프레임에 다시 그려져야 한다. 미니맵은 매 프레임 그리므로
+  // 별도 처리가 필요 없지만, 3D 뷰포트는 명시적으로 알려줘야 한다.
+  for (const view of views) view.resize()
 }
 
 function clampViews(value: number): number {

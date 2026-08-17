@@ -190,12 +190,21 @@ body {
   width: clamp(90px, 13vw, 140px);
 }
 
-.debug {
+.debug-stack {
   position: fixed;
   top: 12px;
   right: 12px;
   z-index: 10;
   width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+
+.debug {
+  width: 100%;
   padding: 10px 12px;
   background: var(--hud-bg);
   border: 1px solid var(--hud-border);
@@ -254,9 +263,9 @@ body {
   color: #ffc9c9;
 }
 
-/* 멀티뷰에서는 디버그 패널이 첫 화면의 라벨과 겹친다. 살짝 내려준다. */
-.stage--2 ~ .debug,
-.stage--4 ~ .debug {
+/* 멀티뷰에서는 패널이 첫 화면의 라벨과 겹친다. 살짝 내려준다. */
+body:has(.stage--2) .debug-stack,
+body:has(.stage--4) .debug-stack {
   top: 52px;
 }
 
@@ -302,4 +311,55 @@ body {
 
 .view__scene.is-dragging {
   cursor: grabbing;
+}
+
+.debug__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.debug__check input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.debug__key {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--hud-border);
+  border-radius: 4px;
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.debug__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  border-top: 1px solid var(--hud-border);
+  padding-top: 8px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+/* 미니맵 크게 보기: 화면 중앙에 띄운다. */
+body.minimap-expanded .hud__minimap {
+  right: 50%;
+  bottom: 50%;
+  transform: translate(50%, 50%);
+  width: min(74vh, 74vw);
+  border-color: rgba(160, 190, 240, 0.45);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  background: rgba(6, 8, 14, 0.94);
+}
+
+/* 4분할에서는 첫 화면의 미니맵만 크게 띄운다. 4개가 겹치면 못 본다. */
+body.minimap-expanded .stage--2 .view:not(:first-child) .hud__minimap,
+body.minimap-expanded .stage--4 .view:not(:first-child) .hud__minimap {
+  display: none;
 }

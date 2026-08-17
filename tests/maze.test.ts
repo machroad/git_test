@@ -8,6 +8,7 @@ import {
   cellIndex,
   generateMaze,
   hasWall,
+  roomCountForSize,
 } from '../src/shared/maze'
 
 describe('미로 생성', () => {
@@ -77,5 +78,71 @@ describe('미로 생성', () => {
     for (const key of maze.keys) {
       expect(dist[cellIndex(maze, key.x, key.y)]).toBeGreaterThan(5)
     }
+  })
+})
+
+describe('사각형 방', () => {
+  it('미로 크기에 따라 방이 만들어진다', () => {
+    expect(roomCountForSize(15)).toBe(2)
+    const maze = generateMaze(15, 15, 2024)
+    expect(maze.rooms.length).toBe(2)
+    for (const room of maze.rooms) {
+      expect(room.w).toBeGreaterThanOrEqual(3)
+      expect(room.h).toBeGreaterThanOrEqual(3)
+    }
+  })
+
+  it('방 내부에는 벽이 없다', () => {
+    const maze = generateMaze(21, 21, 31337)
+    expect(maze.rooms.length).toBeGreaterThan(0)
+    for (const room of maze.rooms) {
+      for (let y = room.y; y < room.y + room.h; y++) {
+        for (let x = room.x; x < room.x + room.w; x++) {
+          if (x + 1 < room.x + room.w) expect(hasWall(maze, x, y, E)).toBe(false)
+          if (y + 1 < room.y + room.h) expect(hasWall(maze, x, y, S)).toBe(false)
+        }
+      }
+    }
+  })
+
+  it('방은 바깥 경계에 닿지 않는다', () => {
+    // 경계 벽을 허물면 미로 밖으로 나가버린다.
+    for (const seed of [1, 2, 3, 77, 4242]) {
+      const maze = generateMaze(21, 21, seed)
+      for (const room of maze.rooms) {
+        expect(room.x).toBeGreaterThanOrEqual(1)
+        expect(room.y).toBeGreaterThanOrEqual(1)
+        expect(room.x + room.w).toBeLessThanOrEqual(maze.w - 1)
+        expect(room.y + room.h).toBeLessThanOrEqual(maze.h - 1)
+      }
+    }
+  })
+
+  it('방끼리 겹치지 않는다', () => {
+    for (const seed of [5, 55, 555, 5555]) {
+      const maze = generateMaze(31, 31, seed)
+      for (let i = 0; i < maze.rooms.length; i++) {
+        for (let j = i + 1; j < maze.rooms.length; j++) {
+          const a = maze.rooms[i]
+          const b = maze.rooms[j]
+          const overlaps =
+            a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+          expect(overlaps).toBe(false)
+        }
+      }
+    }
+  })
+
+  it('방을 뚫어도 모든 칸이 여전히 도달 가능하다', () => {
+    // 방 생성은 벽을 없애기만 하므로 연결성이 깨지면 안 된다.
+    for (const seed of [1, 9, 99, 999]) {
+      const maze = generateMaze(21, 21, seed)
+      const dist = bfsDistances(maze, maze.spawn)
+      expect(Array.from(dist).filter((d) => d < 0)).toHaveLength(0)
+    }
+  })
+
+  it('같은 시드는 같은 방 배치를 만든다', () => {
+    expect(generateMaze(21, 21, 808).rooms).toEqual(generateMaze(21, 21, 808).rooms)
   })
 })

@@ -108,7 +108,7 @@ export class GameView {
     this.scene.syncKeys(keys, this.state.exitOpen, dt)
     if (local) {
       this.scene.setLocalBodyVisible(local.id, this.camera.mode === 'third' && !local.escaped)
-      this.camera.update(this.scene, maze, local.x, local.z)
+      this.camera.update(this.scene, maze, local.x, local.z, dt)
       this.scene.setTorch(local.x, local.z)
     }
     this.scene.render()

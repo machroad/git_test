@@ -19,6 +19,14 @@ export interface Cell {
   y: number
 }
 
+/** 미로 안에 뚫어놓은 사각형 방. 셀 단위 좌표. */
+export interface Room {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 export interface Maze {
   w: number
   h: number
@@ -31,6 +39,8 @@ export interface Maze {
   exit: Cell
   /** 열쇠가 놓인 셀들. */
   keys: Cell[]
+  /** 뚫어놓은 사각형 방들. 미니맵에서 따로 표시한다. */
+  rooms: Room[]
 }
 
 const DIRS: { bit: number; dx: number; dy: number; opposite: number }[] = [
@@ -116,10 +126,77 @@ export function generateMaze(w: number, h: number, seed: number, braid = 0.08): 
     spawn: { x: 0, y: 0 },
     exit: { x: w - 1, y: h - 1 },
     keys: [],
+    rooms: [],
   }
 
+  carveRooms(maze, rng)
   placeLandmarks(maze, rng)
   return maze
+}
+
+/** 미로 크기에 따른 방 개수. 15x15 에서 2개, 커질수록 늘어난다. */
+export function roomCountForSize(size: number): number {
+  return Math.min(5, Math.max(2, Math.round(size / 7)))
+}
+
+/**
+ * 통로만 있는 미로에 사각형 방을 뚫는다.
+ *
+ * 균일한 통로만 있으면 어디가 어딘지 구분이 안 되고, 협동 플레이에서
+ * "저 방에서 만나자" 같은 약속을 할 수가 없다. 넓은 공간이 이정표 역할을 한다.
+ *
+ * 벽을 없애기만 하므로 미로의 연결성은 그대로 유지된다 (새 벽을 세우지 않는다).
+ */
+function carveRooms(maze: Maze, rng: Rng): void {
+  const target = roomCountForSize(Math.min(maze.w, maze.h))
+  const maxRoom = Math.max(3, Math.min(5, Math.floor(maze.w / 4)))
+
+  let attempts = 0
+  while (maze.rooms.length < target && attempts < 200) {
+    attempts++
+    const rw = 3 + randInt(rng, maxRoom - 2)
+    const rh = 3 + randInt(rng, maxRoom - 2)
+    // 바깥 경계에 붙지 않게 한 칸 띄운다. 경계 벽을 건드리지 않기 위해서다.
+    if (maze.w - rw - 2 <= 0 || maze.h - rh - 2 <= 0) break
+    const rx = 1 + randInt(rng, maze.w - rw - 2)
+    const ry = 1 + randInt(rng, maze.h - rh - 2)
+    const room: Room = { x: rx, y: ry, w: rw, h: rh }
+
+    // 방끼리 붙어서 하나의 큰 공간이 되지 않도록 한 칸 이상 띄운다.
+    if (maze.rooms.some((other) => roomsOverlap(room, other, 1))) continue
+
+    for (let y = ry; y < ry + rh; y++) {
+      for (let x = rx; x < rx + rw; x++) {
+        // 방 내부끼리 맞닿은 벽만 없앤다. 방 바깥 테두리는 그대로 둔다.
+        if (x + 1 < rx + rw) {
+          maze.cells[cellIndex(maze, x, y)] &= ~E
+          maze.cells[cellIndex(maze, x + 1, y)] &= ~W
+        }
+        if (y + 1 < ry + rh) {
+          maze.cells[cellIndex(maze, x, y)] &= ~S
+          maze.cells[cellIndex(maze, x, y + 1)] &= ~N
+        }
+      }
+    }
+    maze.rooms.push(room)
+  }
+}
+
+function roomsOverlap(a: Room, b: Room, margin: number): boolean {
+  return (
+    a.x - margin < b.x + b.w &&
+    a.x + a.w + margin > b.x &&
+    a.y - margin < b.y + b.h &&
+    a.y + a.h + margin > b.y
+  )
+}
+
+/** 해당 셀이 방 안에 있으면 그 방을 돌려준다. */
+export function roomAt(maze: Maze, x: number, y: number): Room | null {
+  for (const room of maze.rooms) {
+    if (x >= room.x && x < room.x + room.w && y >= room.y && y < room.y + room.h) return room
+  }
+  return null
 }
 
 /** 막다른 길 일부의 벽을 허물어 순환로를 만든다. */
